@@ -1,37 +1,19 @@
 #!/usr/bin/env python3
 """
-USP Reggio Calabria -> Telegram alert bot.
+USP Monitor -> Telegram alert bot.
 
-Monitora le nuove pubblicazioni del sito dell'Ambito Territoriale di Reggio
-Calabria (WordPress) e invia una notifica Telegram per ogni nuovo articolo.
-
-Approccio architetturale
--------------------------
-- NON fa scraping dell'HTML (fragile). Interroga la REST API nativa di
-  WordPress: GET /wp-json/wp/v2/posts. Dati strutturati, ID stabili,
-  filtro per categoria.
-- Lo stato (insieme degli ID gia' notificati) e' persistito su file JSON.
-  Su GitHub Actions questo file viene committato nel repo => audit trail
-  immutabile di cosa e' stato rilevato e quando.
-- Idempotente: rieseguirlo non genera notifiche duplicate.
-- Primo avvio "silenzioso": al primissimo run popola lo stato con gli
-  articoli gia' presenti SENZA notificarli (evita raffica di messaggi).
-
-Sicurezza
----------
-- Token e chat_id letti SOLO da variabili d'ambiente (mai hardcoded).
-- Il token non viene mai loggato.
-- Solo HTTPS, con timeout su ogni richiesta.
+Monitora le nuove pubblicazioni del sito dell'Ambito Territoriale impostato
+(WordPress) e invia una notifica Telegram per ogni nuovo articolo adattando la provincia.
 
 Configurazione (variabili d'ambiente)
 -------------------------------------
 TELEGRAM_BOT_TOKEN  (obbligatoria)  Token del bot da @BotFather.
 TELEGRAM_CHAT_ID    (obbligatoria)  Il tuo chat_id Telegram.
-SITE_BASE_URL       (opz.)  Default: https://www.istruzioneatprc.it
-CATEGORIES          (opz.)  Slug categorie separati da virgola, es. "grad,doc,recl".
-                            Vuoto = tutte le categorie.
-PER_PAGE            (opz.)  Quanti post leggere per run. Default: 30.
-STATE_FILE          (opz.)  Percorso file di stato. Default: ./state.json
+PROVINCIA           (opzionale)     Nome della provincia (es. "Vibo Valentia", "Reggio Calabria").
+SITE_BASE_URL       (opzionale)     Default: https://www.istruzioneatprc.it
+CATEGORIES          (opzionale)     Slug categorie separati da virgola. Vuoto = tutte.
+PER_PAGE            (opzionale)     Quanti post leggere per run. Default: 30.
+STATE_FILE          (opzionale)     Percorso file di stato. Default: ./state.json
 """
 
 from __future__ import annotations
@@ -75,6 +57,9 @@ class Config:
         self.site_base = os.environ.get("SITE_BASE_URL", DEFAULT_SITE).rstrip("/")
         self.per_page = int(os.environ.get("PER_PAGE", "30"))
         self.state_file = Path(os.environ.get("STATE_FILE", "state.json"))
+        
+        # PARAMETRO DINAMICO: Recupera il nome della provincia dall'ambiente
+        self.provincia = os.environ.get("PROVINCIA", "Reggio Calabria").strip()
 
         raw_cats = os.environ.get("CATEGORIES", "").strip()
         # set di slug in minuscolo; vuoto => nessun filtro (tutte le categorie)
@@ -149,13 +134,13 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
             resp = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT)
             resp.raise_for_status()
             posts = resp.json()
-            log.info("Recuperati %d post dalla REST API.", len(posts))
+            log.info("[%s] Recuperati %d post dalla REST API.", cfg.provincia, len(posts))
             return posts
         except (requests.RequestException, ValueError) as exc:
             last_exc = exc
             wait = RETRY_BACKOFF * attempt
-            log.warning("Tentativo %d/%d fallito: %s. Riprovo tra %ds.",
-                        attempt, MAX_RETRIES, exc, wait)
+            log.warning("[%s] Tentativo %d/%d fallito: %s. Riprovo tra %ds.",
+                        cfg.provincia, attempt, MAX_RETRIES, exc, wait)
             if attempt < MAX_RETRIES:
                 time.sleep(wait)
 
@@ -212,12 +197,11 @@ def send_telegram(cfg: Config, text: str, reply_markup: dict | None = None,
     try:
         resp = requests.post(api, json=payload, timeout=HTTP_TIMEOUT)
         if resp.status_code != 200:
-            # Non logghiamo il token: l'URL non viene mai stampato.
-            log.error("Telegram ha risposto %s: %s", resp.status_code, resp.text[:300])
+            log.error("[%s] Telegram ha risposto %s: %s", cfg.provincia, resp.status_code, resp.text[:300])
             return False
         return True
     except requests.RequestException as exc:
-        log.error("Errore invio Telegram: %s", exc)
+        log.error("[%s] Erreore invio Telegram: %s", cfg.provincia, exc)
         return False
 
 
@@ -273,14 +257,10 @@ def build_buttons(post: dict[str, Any]) -> dict[str, Any] | None:
     return {"inline_keyboard": [row]} if row else None
 
 
-def format_message(post: dict[str, Any]) -> str:
+def format_message(post: dict[str, Any], provincia: str) -> str:
     """
     Costruisce il testo HTML del messaggio (i link vanno nei bottoni inline).
-
-    Nota su sicurezza/encoding: i titoli di WordPress arrivano con entita' HTML
-    gia' codificate (es. '&#8211;' = trattino lungo). Le decodifichiamo con
-    html.unescape() e poi ri-escapiamo SOLO i caratteri sensibili per Telegram
-    (< > &) con html.escape(): evita il doppio-escaping e previene injection.
+    Usa il parametro 'provincia' per l'intestazione dinamica.
     """
     raw_title = post.get("title", {}).get("rendered", "(senza titolo)").strip()
     title = html.escape(html.unescape(raw_title))
@@ -291,7 +271,7 @@ def format_message(post: dict[str, Any]) -> str:
     excerpt_line = (f"\n<i>{html.escape(excerpt)}</i>\n") if excerpt else ""
 
     return (
-        f"📢 <b>USP Reggio Calabria — Nuovo avviso</b>\n"
+        f"📢 <b>USP {html.escape(provincia)} — Nuovo avviso</b>\n"
         f"➖➖➖➖➖➖➖➖➖➖\n"
         f"<b>{title}</b>\n"
         f"{excerpt_line}\n"
@@ -320,34 +300,31 @@ def run() -> int:
         for p in posts_sorted:
             seen.add(int(p["id"]))
         save_state(cfg.state_file, seen)
-        log.info("Primo avvio: stato inizializzato con %d articoli (nessuna notifica).", len(seen))
+        log.info("[%s] Primo avvio: stato inizializzato con %d articoli (nessuna notifica).", cfg.provincia, len(seen))
         return 0
 
     # --- Run normale: notifica solo i nuovi che superano il filtro ---
     new_posts = [p for p in posts_sorted if int(p["id"]) not in seen]
     if not new_posts:
-        log.info("Nessun nuovo articolo.")
+        log.info("[%s] Nessun nuovo articolo.", cfg.provincia)
         return 0
 
-    log.info("Trovati %d nuovi articoli (prima del filtro categorie).", len(new_posts))
+    log.info("[%s] Trovati %d nuovi articoli (prima del filtro categorie).", cfg.provincia, len(new_posts))
     notified = 0
     for p in new_posts:
         pid = int(p["id"])
-        # Segna comunque come 'visto' per non rivalutarlo ai run successivi,
-        # anche se non passa il filtro (evita ricontrolli inutili).
         if matches_filter(p, cfg.categories):
-            if send_telegram(cfg, format_message(p), reply_markup=build_buttons(p)):
+            if send_telegram(cfg, format_message(p, cfg.provincia), reply_markup=build_buttons(p)):
                 notified += 1
                 seen.add(pid)
                 time.sleep(TELEGRAM_RATE_DELAY)
             else:
-                # Invio fallito: NON marcare come visto, riproveremo al prossimo run.
-                log.warning("Notifica fallita per post %s, verra' ritentata.", pid)
+                log.warning("[%s] Notifica fallita per post %s, verra' ritentata.", cfg.provincia, pid)
         else:
             seen.add(pid)
 
     save_state(cfg.state_file, seen)
-    log.info("Completato. Notifiche inviate: %d.", notified)
+    log.info("[%s] Completato. Notifiche inviate: %d.", cfg.provincia, notified)
     return 0
 
 
@@ -356,6 +333,6 @@ if __name__ == "__main__":
         sys.exit(run())
     except SystemExit:
         raise
-    except Exception as exc:  # noqa: BLE001 - top-level guard per logging pulito
+    except Exception as exc:  # noqa: BLE001
         log.exception("Errore fatale: %s", exc)
         sys.exit(1)

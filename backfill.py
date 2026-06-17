@@ -2,30 +2,19 @@
 """
 Backfill una tantum: pubblica su Telegram gli avvisi degli ultimi N giorni.
 
-Serve a "popolare" un canale Telegram appena creato con lo storico recente, in
-modo che i nuovi iscritti trovino subito la cronologia (i canali Telegram la
-conservano: chi entra dopo puo' scorrere all'indietro e vedere tutto).
+Serve a "popolare" un canale o gruppo Telegram appena creato con lo storico recente, in
+modo che i nuovi iscritti trovino subito la cronologia.
 
-Va lanciato UNA VOLTA, in locale, dopo aver puntato il bot al canale.
-Riusa la logica di monitor.py (formattazione, filtro categorie, stato) per
-restare coerente con il bot in produzione.
+Va lanciato UNA VOLTA, in locale, dopo aver puntato il bot al canale/gruppo corretto.
+Riusa la logica di monitor.py per restare coerente con il bot in produzione.
 
-Sicurezza / rate-limit
-----------------------
-- Invio "throttled" (una pausa tra un messaggio e l'altro) per non saturare
-  l'API Telegram; gestisce esplicitamente la risposta 429 (Too Many Requests).
-- Aggiorna state.json aggiungendo gli ID inviati: cosi' il bot in produzione
-  NON ripubblichera' gli stessi avvisi. Ricordati poi di committare state.json.
-
-Uso
----
-    # imposta le stesse env del bot (token, chat/canale, eventuali categorie)
-    export TELEGRAM_BOT_TOKEN="..."
-    export TELEGRAM_CHAT_ID="@nomecanale"      # o -1001234567890
-    export CATEGORIES="grad,doc,recl,avvisi"   # stesso filtro del bot (vuoto = tutto)
-
-    python backfill.py            # ultimi 30 giorni
-    python backfill.py 60         # ultimi 60 giorni
+Configurazione (variabili d'ambiente)
+-------------------------------------
+TELEGRAM_BOT_TOKEN  (obbligatoria)  Token del bot da @BotFather.
+TELEGRAM_CHAT_ID    (obbligatoria)  Il tuo chat_id Telegram.
+PROVINCIA           (opzionale)     Nome della provincia (es. "Vibo Valentia", "Reggio Calabria").
+SITE_BASE_URL       (opzionale)     URL del sito target.
+CATEGORIES          (opzionale)     Slug categorie separate da virgola. Vuoto = tutte.
 """
 
 from __future__ import annotations
@@ -67,7 +56,7 @@ def fetch_range(cfg: monitor.Config, date_from: str, date_to: str) -> list[dict]
             break
         posts.extend(batch)
         total = int(resp.headers.get("X-WP-TotalPages", "1"))
-        print(f"  pagina {params['page']}/{total} -> {len(batch)} post")
+        print(f"  [{cfg.provincia}] pagina {params['page']}/{total} -> {len(batch)} post")
         if params["page"] >= total:
             break
         params["page"] += 1
@@ -75,13 +64,13 @@ def fetch_range(cfg: monitor.Config, date_from: str, date_to: str) -> list[dict]
 
 
 def send_throttled(cfg: monitor.Config, text: str, reply_markup: dict | None = None) -> bool:
-    """Invio singolo con gestione del 429 (retry_after). Preview disabilitata per compattezza."""
+    """Invio singolo con gestione nativa del 429 (Too Many Requests)."""
     api = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
     payload = {
         "chat_id": cfg.chat_id,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True,  # in un backfill lungo le preview appesantirebbero lo scroll
+        "disable_web_page_preview": True,  # Disabilitata per rendere compatto lo scroll dello storico
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
@@ -93,7 +82,7 @@ def send_throttled(cfg: monitor.Config, text: str, reply_markup: dict | None = N
             return False
         if resp.status_code == 429:
             wait = resp.json().get("parameters", {}).get("retry_after", 5) + 1
-            print(f"  rate-limit: attendo {wait}s ...")
+            print(f"  rate-limit riscontrato: attendo {wait}s ...")
             time.sleep(wait)
             continue
         if resp.status_code != 200:
@@ -110,10 +99,10 @@ def main() -> int:
     today = date.today()
     date_from = (today - timedelta(days=days)).isoformat()
     date_to = today.isoformat()
-    print(f"Backfill: post dal {date_from} al {date_to} verso {cfg.chat_id}")
+    print(f"Backfill [{cfg.provincia}]: post dal {date_from} al {date_to} verso la chat {cfg.chat_id}")
 
     posts = fetch_range(cfg, date_from, date_to)
-    print(f"Trovati {len(posts)} post nel periodo.")
+    print(f"Trovati {len(posts)} post nel periodo selezionato.")
 
     state = monitor.load_state(cfg.state_file)
     seen = set(state["seen_ids"])
@@ -122,18 +111,20 @@ def main() -> int:
     for p in posts:
         pid = int(p["id"])
         if monitor.matches_filter(p, cfg.categories):
-            if send_throttled(cfg, monitor.format_message(p), monitor.build_buttons(p)):
+            # OTTIMIZZAZIONE: Passiamo cfg.provincia alla nuova funzione di monitor per l'intestazione dinamica
+            msg_text = monitor.format_message(p, cfg.provincia)
+            if send_throttled(cfg, msg_text, monitor.build_buttons(p)):
                 sent += 1
                 print(f"  inviato [{pid}] {p.get('date','')[:10]}")
                 time.sleep(THROTTLE_SECONDS)
             else:
-                print(f"  FALLITO [{pid}] - non lo marco come visto, lo ripubblichera' il bot", file=sys.stderr)
+                print(f"  FALLITO [{pid}] - non lo marco come visto, verrà ritentato dal bot", file=sys.stderr)
                 continue
         seen.add(pid)
 
     monitor.save_state(cfg.state_file, seen)
-    print(f"\nFatto. Messaggi inviati: {sent}. Stato aggiornato ({len(seen)} ID).")
-    print("Ricorda: 'git commit -am \"backfill\" && git push' per allineare il bot in produzione.")
+    print(f"\nFatto! Messaggi storici inviati con successo: {sent}. Stato aggiornato ({len(seen)} ID).")
+    print("Ricorda di allineare GitHub: git commit -am \"chore: allineato stato dopo backfill\" && git push origin master")
     return 0
 
 
