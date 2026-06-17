@@ -40,6 +40,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -196,15 +197,18 @@ def matches_filter(post: dict[str, Any], wanted: set[str]) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def send_telegram(cfg: Config, text: str) -> bool:
-    """Invia un messaggio HTML su Telegram. Restituisce True se ok."""
+def send_telegram(cfg: Config, text: str, reply_markup: dict | None = None,
+                  disable_preview: bool = True) -> bool:
+    """Invia un messaggio HTML su Telegram, con eventuali bottoni inline. True se ok."""
     api = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
-    payload = {
+    payload: dict[str, Any] = {
         "chat_id": cfg.chat_id,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False,
+        "disable_web_page_preview": disable_preview,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         resp = requests.post(api, json=payload, timeout=HTTP_TIMEOUT)
         if resp.status_code != 200:
@@ -232,9 +236,46 @@ def format_date_it(iso: str) -> str:
         return iso[:10]
 
 
+# Regex best-effort per il primo link a PDF nel contenuto del post.
+_PDF_RE = re.compile(r'href=["\']([^"\']+\.pdf)["\']', re.IGNORECASE)
+# Per ripulire l'estratto dai tag HTML.
+_TAG_RE = re.compile(r"<[^>]+>")
+EXCERPT_MAX = 220  # caratteri massimi dell'estratto nel messaggio
+
+
+def first_pdf(post: dict[str, Any]) -> str:
+    """Primo link a PDF nel contenuto del post (best-effort), altrimenti stringa vuota."""
+    content = post.get("content", {}).get("rendered", "")
+    match = _PDF_RE.search(content)
+    return match.group(1) if match else ""
+
+
+def clean_excerpt(post: dict[str, Any]) -> str:
+    """Estratto del post ripulito da tag HTML ed entita', troncato a EXCERPT_MAX caratteri."""
+    raw = post.get("excerpt", {}).get("rendered", "")
+    text = html.unescape(_TAG_RE.sub("", raw)).strip()
+    # WordPress aggiunge spesso un '[...]' / '[…]' o simili in coda: lo togliamo.
+    text = re.sub(r"\s*\[?(?:\.\.\.|\u2026)\]?\s*$", "", text).strip()
+    if len(text) > EXCERPT_MAX:
+        text = text[:EXCERPT_MAX].rsplit(" ", 1)[0].rstrip() + "…"
+    return text
+
+
+def build_buttons(post: dict[str, Any]) -> dict[str, Any] | None:
+    """Costruisce la tastiera inline: 'Apri avviso' e, se presente, 'Scarica PDF'."""
+    row = []
+    link = post.get("link", "")
+    if link:
+        row.append({"text": "📄 Apri avviso", "url": link})
+    pdf = first_pdf(post)
+    if pdf:
+        row.append({"text": "⬇️ Scarica PDF", "url": pdf})
+    return {"inline_keyboard": [row]} if row else None
+
+
 def format_message(post: dict[str, Any]) -> str:
     """
-    Costruisce il messaggio HTML per un articolo.
+    Costruisce il testo HTML del messaggio (i link vanno nei bottoni inline).
 
     Nota su sicurezza/encoding: i titoli di WordPress arrivano con entita' HTML
     gia' codificate (es. '&#8211;' = trattino lungo). Le decodifichiamo con
@@ -243,19 +284,20 @@ def format_message(post: dict[str, Any]) -> str:
     """
     raw_title = post.get("title", {}).get("rendered", "(senza titolo)").strip()
     title = html.escape(html.unescape(raw_title))
-    link = post.get("link", "")
     date_it = format_date_it(post.get("date", ""))
     names = category_names(post)
     cat_line = ("🏷 " + " · ".join(html.escape(n) for n in names)) if names else ""
+    excerpt = clean_excerpt(post)
+    excerpt_line = (f"\n<i>{html.escape(excerpt)}</i>\n") if excerpt else ""
 
     return (
         f"📢 <b>USP Reggio Calabria — Nuovo avviso</b>\n"
         f"➖➖➖➖➖➖➖➖➖➖\n"
-        f"<b>{title}</b>\n\n"
+        f"<b>{title}</b>\n"
+        f"{excerpt_line}\n"
         f"🗓 {date_it}\n"
-        f"{cat_line}\n\n"
-        f'🔗 <a href="{html.escape(link)}">Leggi l\'avviso completo →</a>'
-    ).replace("\n\n\n", "\n\n")
+        f"{cat_line}"
+    ).replace("\n\n\n", "\n\n").rstrip()
 
 
 # --------------------------------------------------------------------------- #
@@ -294,7 +336,7 @@ def run() -> int:
         # Segna comunque come 'visto' per non rivalutarlo ai run successivi,
         # anche se non passa il filtro (evita ricontrolli inutili).
         if matches_filter(p, cfg.categories):
-            if send_telegram(cfg, format_message(p)):
+            if send_telegram(cfg, format_message(p), reply_markup=build_buttons(p)):
                 notified += 1
                 seen.add(pid)
                 time.sleep(TELEGRAM_RATE_DELAY)
