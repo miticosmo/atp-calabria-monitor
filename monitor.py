@@ -172,6 +172,18 @@ def extract_categories(post: dict[str, Any]) -> list[str]:
     return slugs
 
 
+def category_names(post: dict[str, Any]) -> list[str]:
+    """Estrae i nomi leggibili delle categorie (es. 'Docenti', 'Graduatorie') per la visualizzazione."""
+    names: list[str] = []
+    embedded = post.get("_embedded", {})
+    for term_group in embedded.get("wp:term", []):
+        for term in term_group:
+            if term.get("taxonomy") == "category" and term.get("name"):
+                # I nomi WP possono contenere entita' HTML: le decodifichiamo.
+                names.append(html.unescape(term["name"]).strip())
+    return names
+
+
 def matches_filter(post: dict[str, Any], wanted: set[str]) -> bool:
     """True se il post va notificato: nessun filtro, oppure interseca le categorie volute."""
     if not wanted:
@@ -205,20 +217,44 @@ def send_telegram(cfg: Config, text: str) -> bool:
         return False
 
 
+_MESI_IT = (
+    "", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+)
+
+
+def format_date_it(iso: str) -> str:
+    """Converte una data ISO (YYYY-MM-DD...) in formato italiano esteso, es. '16 giugno 2026'."""
+    try:
+        y, m, d = iso[:10].split("-")
+        return f"{int(d)} {_MESI_IT[int(m)]} {y}"
+    except (ValueError, IndexError):
+        return iso[:10]
+
+
 def format_message(post: dict[str, Any]) -> str:
-    """Costruisce il messaggio HTML per un articolo. Esegue escaping anti-injection."""
-    title = html.escape(post.get("title", {}).get("rendered", "(senza titolo)").strip())
+    """
+    Costruisce il messaggio HTML per un articolo.
+
+    Nota su sicurezza/encoding: i titoli di WordPress arrivano con entita' HTML
+    gia' codificate (es. '&#8211;' = trattino lungo). Le decodifichiamo con
+    html.unescape() e poi ri-escapiamo SOLO i caratteri sensibili per Telegram
+    (< > &) con html.escape(): evita il doppio-escaping e previene injection.
+    """
+    raw_title = post.get("title", {}).get("rendered", "(senza titolo)").strip()
+    title = html.escape(html.unescape(raw_title))
     link = post.get("link", "")
-    date_iso = post.get("date", "")[:10]  # YYYY-MM-DD
-    cats = extract_categories(post)
-    cat_line = ("🏷️ " + ", ".join(html.escape(c) for c in cats)) if cats else ""
+    date_it = format_date_it(post.get("date", ""))
+    names = category_names(post)
+    cat_line = ("🏷 " + " · ".join(html.escape(n) for n in names)) if names else ""
 
     return (
-        f"📢 <b>Nuovo avviso USP Reggio Calabria</b>\n\n"
-        f"<b>{title}</b>\n"
-        f"📅 {date_iso}\n"
+        f"📢 <b>USP Reggio Calabria — Nuovo avviso</b>\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"<b>{title}</b>\n\n"
+        f"🗓 {date_it}\n"
         f"{cat_line}\n\n"
-        f'🔗 <a href="{html.escape(link)}">Apri l\'articolo</a>'
+        f'🔗 <a href="{html.escape(link)}">Leggi l\'avviso completo →</a>'
     ).replace("\n\n\n", "\n\n")
 
 
