@@ -41,3 +41,14 @@ jobs:
         with:
           commit_message: "chore: auto-update state_reggio_calabria.json [skip ci]"
           file_pattern: "state_reggio_calabria.json"
+
+      # Avviso Telegram all'amministratore solo se il run fallisce.
+      # Usa il bot RC perché è l'unico abilitato a inviare DM in privato.
+      - name: Notifica fallimento su Telegram
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN_RC }}/sendMessage" \
+            --data-urlencode chat_id="${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}" \
+            --data-urlencode text="⚠️ Workflow FALLITO: USP RC Monitor
+Run: ${{ github.run_id }}
+Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
