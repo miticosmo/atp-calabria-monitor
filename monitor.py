@@ -4,16 +4,6 @@ USP Monitor -> Telegram alert bot.
 
 Monitora le nuove pubblicazioni del sito dell'Ambito Territoriale impostato
 (WordPress) e invia una notifica Telegram per ogni nuovo articolo adattando la provincia.
-
-Configurazione (variabili d'ambiente)
--------------------------------------
-TELEGRAM_BOT_TOKEN  (obbligatoria)  Token del bot da @BotFather.
-TELEGRAM_CHAT_ID    (obbligatoria)  Il tuo chat_id Telegram.
-PROVINCIA           (opzionale)     Nome della provincia (es. "Vibo Valentia", "Reggio Calabria").
-SITE_BASE_URL       (opzionale)     Default: https://www.istruzioneatprc.it
-CATEGORIES          (opzionale)     Slug categorie separati da virgola. Vuoto = tutte.
-PER_PAGE            (opzionale)     Quanti post leggere per run. Default: 30.
-STATE_FILE          (opzionale)     Percorso file di stato. Default: ./state.json
 """
 
 from __future__ import annotations
@@ -49,7 +39,7 @@ TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per non saturare l'API Telegram
 
 
 class Config:
-    """Carica e valida la configurazione dall'ambiente. Fail-fast se manca l'essenziale."""
+    """Carica e valida la configurazione dall'ambiente."""
 
     def __init__(self) -> None:
         self.bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -57,8 +47,6 @@ class Config:
         self.site_base = os.environ.get("SITE_BASE_URL", DEFAULT_SITE).rstrip("/")
         self.per_page = int(os.environ.get("PER_PAGE", "30"))
         self.state_file = Path(os.environ.get("STATE_FILE", "state.json"))
-
-        # PARAMETRO DINAMICO: Recupera il nome della provincia dall'ambiente
         self.provincia = os.environ.get("PROVINCIA", "Reggio Calabria").strip()
 
         raw_cats = os.environ.get("CATEGORIES", "").strip()
@@ -83,9 +71,8 @@ class Config:
 # Persistenza stato
 # --------------------------------------------------------------------------- #
 
-
 def load_state(path: Path) -> dict[str, Any]:
-    """Carica lo stato. Restituisce {'seen_ids': [...], 'seeded': bool}."""
+    """Carica lo stato."""
     if not path.exists():
         return {"seen_ids": [], "seeded": False}
     try:
@@ -114,7 +101,6 @@ def save_state(path: Path, seen_ids: set[int]) -> None:
 # Fetch e parsing articoli (WordPress REST API)
 # --------------------------------------------------------------------------- #
 
-
 def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     """Recupera gli ultimi post via REST API WordPress."""
     url = f"{cfg.site_base}/wp-json/wp/v2/posts"
@@ -140,22 +126,30 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     raise RuntimeError(f"Impossibile recuperare i post dopo {MAX_RETRIES} tentativi") from last_exc
 
 
-# Regex per estrarre tutti i link che portano a file allegati nel testo
-_ALLEGATI_RE = re.compile(r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx))["\'][^>]*>(.*?)</a>', re.IGNORECASE)
+# REGEX POTENZIATA: Supporta ritorni a capo [\s\S]*? e query parameters (?:\?[^"\']*)? dopo l'estensione
+_ALLEGATI_RE = re.compile(
+    r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx)(?:\?[^"\']*)?)["\'][[^>]*>([\s\S]*?)</a>',
+    re.IGNORECASE
+)
 
 
 def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
-    """Estrae tutti i link ai file allegati (PDF, ZIP, Excel, Word) dal testo HTML."""
+    """Estrae tutti i link ai file allegati salvaguardando la formattazione."""
     content = post.get("content", {}).get("rendered", "")
     attachments = []
     matches = _ALLEGATI_RE.findall(content)
     for url, text in matches:
+        # Rimuove tag interni al testo del link (es: span o strong)
         clean_text = re.sub(r'<[^>]+>', '', text).strip()
         if not clean_text:
-            clean_text = url.split("/")[-1]
+            # Se il testo è vuoto estrae il nome del file dall'URL rimovendo eventuali query string
+            clean_text = url.split("/")[-1].split("?")[0]
         if len(clean_text) > 25:
             clean_text = clean_text[:22] + "..."
-        attachments.append({"name": clean_text, "url": url})
+
+        # IMPORTANTE: Eseguiamo l'escape del testo per evitare crash di parsing HTML su Telegram
+        safe_name = html.escape(clean_text)
+        attachments.append({"name": safe_name, "url": url.strip()})
     return attachments
 
 
@@ -198,7 +192,7 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
 
 
 def send_telegram_message(cfg: Config, text: str, reply_markup: dict | None = None) -> bool:
-    """Invia fisicamente il payload strutturato alle API di Telegram."""
+    """Invia il payload strutturato alle API di Telegram."""
     url = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
     payload = {
         "chat_id": cfg.chat_id,
@@ -243,16 +237,14 @@ def main() -> None:
         save_state(cfg.state_file, seen_ids)
         return
 
-    # Gestione Primo Avvio Silenzioso (Seeding)
     if not seeded:
         log.info("[%s] Inizializzazione: salvo silenziosamente %d articoli storici.", cfg.provincia, len(valid_posts))
         for post in valid_posts:
             seen_ids.add(post["id"])
         save_state(cfg.state_file, seen_ids)
-        log.info("[%s] Database di stato sincronizzato. Pronto per le notifiche future.", cfg.provincia)
+        log.info("[%s] Database di stato sincronizzato. Pronto per le notifiche.", cfg.provincia)
         return
 
-    # Cerca nuove pubblicazioni (dalla più vecchia alla più recente)
     new_posts = [p for p in valid_posts if p["id"] not in seen_ids]
     new_posts.reverse()
 
@@ -271,7 +263,7 @@ def main() -> None:
 
         inline_keyboard = [[{"text": "📄 Apri avviso", "url": post.get("link", "")}]]
         if attachments:
-            for att in attachments[:2]:  # Massimo due bottoni veloci per non rompere la UI
+            for att in attachments[:2]:  # Massimo due bottoni veloci sotto il testo
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])
 
         reply_markup = {"inline_keyboard": inline_keyboard}
@@ -279,9 +271,9 @@ def main() -> None:
         if send_telegram_message(cfg, text, reply_markup):
             seen_ids.add(p_id)
             success_count += 1
-            time.sleep(TELEGRAM_RATE_DELAY)  # Anti-flood delay
+            time.sleep(TELEGRAM_RATE_DELAY)
         else:
-            log.warning("[%s] Invio fallito per post %d. Verrà ritentato nel prossimo ciclo.", cfg.provincia, p_id)
+            log.warning("[%s] Invio fallito per post %d. Verrà ritentato.", cfg.provincia, p_id)
 
     save_state(cfg.state_file, seen_ids)
     log.info("[%s] Run terminata. Notifiche inviate con successo: %d.", cfg.provincia, success_count)
