@@ -28,9 +28,9 @@ jobs:
 
       - name: Run Monitor Script
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CATEGORIES: "grad,doc,recl,avvisi"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_RC }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_RC }}
+          CATEGORIES: ""
           PROVINCIA: "Reggio Calabria"
           SITE_BASE_URL: "https://www.istruzioneatprc.it"
           STATE_FILE: "state_reggio_calabria.json"
