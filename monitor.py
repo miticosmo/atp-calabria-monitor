@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,78 @@ HTTP_TIMEOUT = 30  # secondi
 MAX_RETRIES = 3
 RETRY_BACKOFF = 5  # secondi
 TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per anti-flood
+TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
+
+# Emoji dedicata per dare priorità visiva alle categorie principali
+CATEGORY_EMOJI = {
+    "grad": "🎓",
+    "doc": "👨‍🏫",
+    "recl": "📋",
+    "mob": "🔄",
+    "avvisi": "⚠️",
+    "ata": "🗂️",
+    "notizie": "📰",
+}
+
+_MONTHS_IT = {
+    "01": "gennaio", "02": "febbraio", "03": "marzo", "04": "aprile",
+    "05": "maggio", "06": "giugno", "07": "luglio", "08": "agosto",
+    "09": "settembre", "10": "ottobre", "11": "novembre", "12": "dicembre",
+}
+
+
+def _format_date(date_raw: str) -> tuple[str, str]:
+    """Restituisce (data italiana con orario, etichetta relativa Oggi/Ieri)."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?", date_raw)
+    if not m:
+        return date_raw, ""
+    year, month, day, hh, mm = m.groups()
+    formatted = f"{int(day)} {_MONTHS_IT.get(month, month)} {year}"
+    if hh and mm:
+        formatted += f", {hh}:{mm}"
+    relative = ""
+    try:
+        delta = (date.today() - date(int(year), int(month), int(day))).days
+        if delta == 0:
+            relative = "🆕 Oggi"
+        elif delta == 1:
+            relative = "Ieri"
+    except ValueError:
+        pass
+    return formatted, relative
+
+
+def _format_categories(post: dict[str, Any]) -> str:
+    """Costruisce la stringa categorie con emoji dedicata, senza duplicati."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    terms = post.get("_embedded", {}).get("wp:term", [])
+    for term_list in terms:
+        for term in term_list:
+            if term.get("taxonomy") != "category":
+                continue
+            name = term.get("name", "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            emoji = CATEGORY_EMOJI.get(term.get("slug", "").lower(), "")
+            parts.append(f"{emoji} {name}".strip())
+    return " · ".join(parts)
+
+
+def _extract_author(post: dict[str, Any]) -> str:
+    """Estrae il nome dell'autore dall'oggetto _embedded."""
+    authors = post.get("_embedded", {}).get("author", [])
+    if authors and isinstance(authors, list):
+        return (authors[0].get("name") or "").strip()
+    return ""
+
+
+def _truncate_telegram(msg: str) -> str:
+    """Garantisce che il messaggio non superi il limite di Telegram."""
+    if len(msg) <= TELEGRAM_MAX_LEN:
+        return msg
+    return msg[:TELEGRAM_MAX_LEN - 2].rsplit("\n", 1)[0] + "\n…"
 
 
 class Config:
@@ -183,33 +256,16 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     title = html.escape(clean_title)
     excerpt = html.escape(clean_excerpt)
 
-    # Traduzione della data nel formato italiano standard (es: 12 giugno 2026)
-    date_raw = post.get("date", "")
-    date_formatted = date_raw
-    match_date = re.match(r"(\d{4})-(\d{2})-(\d{2})", date_raw)
-    if match_date:
-        year, month, day = match_date.groups()
-        months_it = {
-            "01": "gennaio", "02": "febbraio", "03": "marzo", "04": "aprile",
-            "05": "maggio", "06": "giugno", "07": "luglio", "08": "agosto",
-            "09": "settembre", "10": "ottobre", "11": "novembre", "12": "dicembre"
-        }
-        date_formatted = f"{int(day)} {months_it.get(month, month)} {year}"
+    # Data con orario di pubblicazione + etichetta relativa (Oggi/Ieri)
+    date_formatted, relative_label = _format_date(post.get("date", ""))
 
-    # Estrazione delle categorie reali assegnate all'articolo
-    category_names = []
-    terms = post.get("_embedded", {}).get("wp:term", [])
-    for term_list in terms:
-        for term in term_list:
-            if term.get("taxonomy") == "category":
-                category_names.append(term.get("name", ""))
+    # Categorie con emoji dedicata per priorità visiva
+    categories_str = _format_categories(post)
 
-    # Rimozione dei duplicati mantenendo l'allineamento ordinato
-    seen = set()
-    category_names = [x for x in category_names if x and not (x in seen or seen.add(x))]
-    categories_str = " · ".join(category_names)
+    # Autore dell'articolo
+    author = _extract_author(post)
 
-    # COSTRUZIONE DEL MESSAGGIO CON SEPARATORI GEOMETRICI E CORREZIONE RETTANGOLO ROSSO
+    # COSTRUZIONE DEL MESSAGGIO CON SEPARATORI GEOMETRICI
     msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n"
     msg += "➖ ➖ ➖ ➖ ➖ ➖ ➖\n"
     msg += f"<b>{title}</b>\n\n"
@@ -217,18 +273,24 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     if excerpt and excerpt != "...":
         msg += f"<i>{excerpt}</i>\n\n"  # Inserisce il testo dell'articolo in corsivo
 
-    msg += f"📅 {date_formatted}\n"
+    date_line = f"📅 {date_formatted}"
+    if relative_label:
+        date_line += f" · {relative_label}"
+    msg += date_line + "\n"
 
     if categories_str:
         msg += f"🏷️ {categories_str}\n"
 
+    if author:
+        msg += f"✍️ {html.escape(author)}\n"
+
     if attachments:
-        msg += "\n📎 <b>Allegati rilevati:</b>\n"
+        msg += f"\n📎 <b>Allegati rilevati ({len(attachments)}):</b>\n"
         for att in attachments:
             safe_url = html.escape(att['url'])
             msg += f"• <a href='{safe_url}'>{att['name']}</a>\n"
 
-    return msg
+    return _truncate_telegram(msg)
 
 
 def send_telegram_message(cfg: Config, text: str, reply_markup: dict | None = None) -> bool:
@@ -301,7 +363,7 @@ def main() -> None:
         attachments = extract_attachments(post)
         text = format_message(post, cfg, attachments)
 
-        inline_keyboard = [[{"text": "📄 Apri avviso", "url": post.get("link", "")}]]
+        inline_keyboard = [[{"text": "📄 Apri pagina avviso", "url": post.get("link", "")}]]
         if attachments:
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])

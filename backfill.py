@@ -21,6 +21,78 @@ DEFAULT_DAYS = 30
 THROTTLE_SECONDS = 2.5
 PER_PAGE = 100
 HTTP_TIMEOUT = 30
+TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
+
+# Emoji dedicata per dare priorità visiva alle categorie principali
+CATEGORY_EMOJI = {
+    "grad": "🎓",
+    "doc": "👨‍🏫",
+    "recl": "📋",
+    "mob": "🔄",
+    "avvisi": "⚠️",
+    "ata": "🗂️",
+    "notizie": "📰",
+}
+
+_MONTHS_IT = {
+    "01": "gennaio", "02": "febbraio", "03": "marzo", "04": "aprile",
+    "05": "maggio", "06": "giugno", "07": "luglio", "08": "agosto",
+    "09": "settembre", "10": "ottobre", "11": "novembre", "12": "dicembre",
+}
+
+
+def _format_date(date_raw: str) -> tuple[str, str]:
+    """Restituisce (data italiana con orario, etichetta relativa Oggi/Ieri)."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?", date_raw)
+    if not m:
+        return date_raw, ""
+    year, month, day, hh, mm = m.groups()
+    formatted = f"{int(day)} {_MONTHS_IT.get(month, month)} {year}"
+    if hh and mm:
+        formatted += f", {hh}:{mm}"
+    relative = ""
+    try:
+        delta = (date.today() - date(int(year), int(month), int(day))).days
+        if delta == 0:
+            relative = "🆕 Oggi"
+        elif delta == 1:
+            relative = "Ieri"
+    except ValueError:
+        pass
+    return formatted, relative
+
+
+def _format_categories(post: dict[str, Any]) -> str:
+    """Costruisce la stringa categorie con emoji dedicata, senza duplicati."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    terms = post.get("_embedded", {}).get("wp:term", [])
+    for term_list in terms:
+        for term in term_list:
+            if term.get("taxonomy") != "category":
+                continue
+            name = term.get("name", "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            emoji = CATEGORY_EMOJI.get(term.get("slug", "").lower(), "")
+            parts.append(f"{emoji} {name}".strip())
+    return " · ".join(parts)
+
+
+def _extract_author(post: dict[str, Any]) -> str:
+    """Estrae il nome dell'autore dall'oggetto _embedded."""
+    authors = post.get("_embedded", {}).get("author", [])
+    if authors and isinstance(authors, list):
+        return (authors[0].get("name") or "").strip()
+    return ""
+
+
+def _truncate_telegram(msg: str) -> str:
+    """Garantisce che il messaggio non superi il limite di Telegram."""
+    if len(msg) <= TELEGRAM_MAX_LEN:
+        return msg
+    return msg[:TELEGRAM_MAX_LEN - 2].rsplit("\n", 1)[0] + "\n…"
 
 class LocalConfig:
     def __init__(self) -> None:
@@ -67,7 +139,10 @@ def fetch_range(cfg: LocalConfig, date_from: str, date_to: str) -> list[dict]:
             break
     return posts
 
-_ALLEGATI_RE = re.compile(r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx))["\'][^>]*>(.*?)</a>', re.IGNORECASE)
+_ALLEGATI_RE = re.compile(
+    r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx)(?:\?[^"\']*)?)["\'][^>]*>([\s\S]*?)</a>',
+    re.IGNORECASE
+)
 
 def extract_attachments(post: dict) -> list[dict[str, str]]:
     content = post.get("content", {}).get("rendered", "")
@@ -80,15 +155,6 @@ def extract_attachments(post: dict) -> list[dict[str, str]]:
         attachments.append({"url": url, "text": clean_text})
     return attachments
 
-def category_names(post: dict) -> list[str]:
-    names = []
-    embedded = post.get("_embedded", {})
-    for term_group in embedded.get("wp:term", []):
-        for term in term_group:
-            if term.get("taxonomy") == "category" and term.get("name"):
-                names.append(html.unescape(term["name"]).strip())
-    return names
-
 def matches_filter(post: dict, wanted: set[str]) -> bool:
     if not wanted:
         return True
@@ -100,51 +166,65 @@ def matches_filter(post: dict, wanted: set[str]) -> bool:
                 slugs.append(term["slug"].lower())
     return bool(set(slugs) & wanted)
 
-_MESI_IT = ("", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre")
-
 def format_message(post: dict, provincia: str) -> str:
-    raw_title = post.get("title", {}).get("rendered", "(senza titolo)").strip()
-    title = html.escape(html.unescape(raw_title))
+    """Costruisce la stessa struttura grafica di monitor.py (format_message)."""
+    # Rimozione dei tag grezzi dall'HTML
+    raw_title = re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", ""))
+    raw_excerpt = re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))
 
-    # Data
-    iso = post.get("date", "")
-    try:
-        y, m, d = iso[:10].split("-")
-        date_it = f"{int(d)} {_MESI_IT[int(m)]} {y}"
-    except:
-        date_it = iso[:10]
+    # Unescape preventivo per convertire i codici nativi WordPress in testo leggibile
+    clean_title = html.unescape(raw_title).strip()
+    clean_excerpt = html.unescape(raw_excerpt).strip()
+    clean_excerpt = re.sub(r'\[&hellip;\]|\[\.\.\.\]', '...', clean_excerpt)
 
-    # Categorie
-    names = category_names(post)
-    cat_line = ("🏷 " + " · ".join(html.escape(n) for n in names)) if names else ""
+    if len(clean_excerpt) > 280:
+        clean_excerpt = clean_excerpt[:277] + "..."
 
-    # Estratto
-    raw_excerpt = post.get("excerpt", {}).get("rendered", "")
-    excerpt = html.unescape(re.sub(r"<[^>]+>", "", raw_excerpt)).strip()
-    excerpt = re.sub(r"\s*\[?(?:\.\.\.|\u2026)\]?\s*$", "", excerpt).strip()
-    if len(excerpt) > 220:
-        excerpt = excerpt[:220].rsplit(" ", 1)[0].rstrip() + "…"
-    excerpt_line = f"\n<i>{html.escape(excerpt)}</i>\n" if excerpt else ""
+    title = html.escape(clean_title)
+    excerpt = html.escape(clean_excerpt)
 
-    # Allegati
+    # Data con orario di pubblicazione + etichetta relativa (Oggi/Ieri)
+    date_formatted, relative_label = _format_date(post.get("date", ""))
+
+    # Categorie con emoji dedicata per priorità visiva
+    categories_str = _format_categories(post)
+
+    # Autore dell'articolo
+    author = _extract_author(post)
+
+    # COSTRUZIONE DEL MESSAGGIO IDENTICA A monitor.py
+    msg = f"📢 <b>USP {provincia} — Nuovo avviso</b>\n"
+    msg += "➖ ➖ ➖ ➖ ➖ ➖ ➖\n"
+    msg += f"<b>{title}</b>\n\n"
+
+    if excerpt and excerpt != "...":
+        msg += f"<i>{excerpt}</i>\n\n"  # Inserisce il testo dell'articolo in corsivo
+
+    date_line = f"📅 {date_formatted}"
+    if relative_label:
+        date_line += f" · {relative_label}"
+    msg += date_line + "\n"
+
+    if categories_str:
+        msg += f"🏷️ {categories_str}\n"
+
+    if author:
+        msg += f"✍️ {html.escape(author)}\n"
+
     attachments = extract_attachments(post)
-    attachments_block = ""
     if attachments:
-        attachments_block = "\n📎 <b>ALLEGATI:</b>\n"
+        msg += f"\n📎 <b>Allegati rilevati ({len(attachments)}):</b>\n"
         for att in attachments:
-            attachments_block += f"• <a href='{att['url']}'>{html.escape(att['text'])}</a>\n"
+            name = html.unescape(att['text'])
+            if len(name) > 25:
+                name = name[:22] + "..."
+            safe_name = html.escape(name)
+            safe_url = html.escape(att['url'])
+            msg += f"• <a href='{safe_url}'>{safe_name}</a>\n"
 
-    return (
-        f"📢 <b>USP {html.escape(provincia)} — Nuovo avviso</b>\n"
-        f"➖➖➖➖➖➖➖➖➖➖\n"
-        f"<b>{title}</b>\n"
-        f"{excerpt_line}"
-        f"{attachments_block}\n"
-        f"🗓 {date_it}\n"
-        f"{cat_line}"
-    ).replace("\n\n\n", "\n\n").rstrip()
+    return _truncate_telegram(msg)
 
-def send_message(cfg: LocalConfig, text: str, link: str) -> bool:
+def send_message(cfg: LocalConfig, text: str, reply_markup: dict | None = None) -> bool:
     api = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
     payload: dict[str, Any] = {
         "chat_id": cfg.chat_id,
@@ -152,8 +232,8 @@ def send_message(cfg: LocalConfig, text: str, link: str) -> bool:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-    if link:
-        payload["reply_markup"] = {"inline_keyboard": [[{"text": "📄 Apri pagina avviso", "url": link}]]}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     for _ in range(3):
         resp = requests.post(api, json=payload, timeout=HTTP_TIMEOUT)
@@ -187,7 +267,18 @@ def main() -> int:
     for p in posts:
         pid = int(p["id"])
         if matches_filter(p, cfg.categories):
-            if send_message(cfg, format_message(p, cfg.provincia), p.get("link", "")):
+            attachments = extract_attachments(p)
+            text = format_message(p, cfg.provincia)
+
+            inline_keyboard = [[{"text": "📄 Apri pagina avviso", "url": p.get("link", "")}]]
+            for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
+                name = html.unescape(att["text"])
+                if len(name) > 25:
+                    name = name[:22] + "..."
+                inline_keyboard.append([{"text": f"⬇️ {name}", "url": att["url"]}])
+            reply_markup = {"inline_keyboard": inline_keyboard}
+
+            if send_message(cfg, text, reply_markup):
                 sent += 1
                 print(f"  Inviato [{pid}]")
                 seen_ids.add(pid)

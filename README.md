@@ -14,9 +14,9 @@ viene versionato su Git, quindi ogni rilevamento è tracciato con timestamp
 
 ```
 GitHub Actions (cron)  →  monitor.py  →  WP REST API (/wp-json/wp/v2/posts)
-                                      →  confronto con state.json (ID già visti)
+                                      →  confronto con il file di stato (ID già visti)
                                       →  Telegram Bot API (solo i nuovi)
-                                      →  commit di state.json nel repo
+                                      →  commit del file di stato nel repo
 ```
 
 - **Zero infrastruttura**, **zero costi** (GitHub Actions, repo privato).
@@ -55,8 +55,13 @@ Metodo alternativo: dopo aver scritto al tuo bot, apri nel browser
    ├── README.md
    └── .github/
        └── workflows/
-           └── monitor.yml
+           ├── monitor_reggio_calabria.yml
+           └── monitor_vibo_valentia.yml
    ```
+
+   Ogni provincia ha il proprio workflow e il proprio file di stato
+   (`state_reggio_calabria.json`, `state_vibo_valentia.json`), così non si
+   sovrappongono e non generano notifiche doppie.
 
 ### 4. Imposta i Secrets
 
@@ -67,12 +72,14 @@ Crea questi due secret (mai scriverli nel codice):
 | --------------------- | ------------------------- |
 | `TELEGRAM_BOT_TOKEN`  | il token di @BotFather    |
 | `TELEGRAM_CHAT_ID`    | il tuo chat_id            |
+| `BOT_PUSH_TOKEN`      | Personal Access Token con permesso `repo`, usato dai workflow per committare il file di stato |
 
 ### 5. Primo avvio
 
 Vai su **Actions → USP RC Monitor → Run workflow** (lancio manuale).
 Il primo run **non invia notifiche**: registra gli articoli già pubblicati e
-crea `state.json`. Dal run successivo riceverai solo i **nuovi** avvisi.
+crea il file di stato della provincia (es. `state_reggio_calabria.json`). Dal
+run successivo riceverai solo i **nuovi** avvisi. Ripeti per `USP VV Monitor`.
 
 Da lì il cron parte da solo.
 
@@ -80,13 +87,15 @@ Da lì il cron parte da solo.
 
 ## Configurazione
 
-Modificabile nel file `.github/workflows/monitor.yml`, sezione `env`:
+Modificabile nei workflow per provincia in `.github/workflows/`
+(`monitor_reggio_calabria.yml`, `monitor_vibo_valentia.yml`), sezione `env`:
 
 | Variabile     | Default                    | Descrizione                                                      |
 | ------------- | -------------------------- | ---------------------------------------------------------------- |
 | `CATEGORIES`  | `grad,doc,recl,avvisi`     | Slug categorie da notificare, separati da virgola. Vuoto = tutte |
+| `PROVINCIA`   | `Reggio Calabria`          | Nome provincia mostrato nell'intestazione del messaggio          |
 | `PER_PAGE`    | `30`                       | Quanti articoli leggere per run                                  |
-| `STATE_FILE`  | `state.json`               | Percorso del file di stato                                       |
+| `STATE_FILE`  | `state.json`               | Percorso del file di stato (impostato per provincia nei workflow)|
 | `SITE_BASE_URL` | `https://www.istruzioneatprc.it` | URL base del sito                                       |
 
 ### Slug categorie utili (dal sito)
@@ -110,7 +119,7 @@ Nel `cron` del workflow. Esempi (orari in **UTC**):
 
 | Cron              | Significato (ora italiana estiva)        |
 | ----------------- | ---------------------------------------- |
-| `0 5-19/2 * * *`  | ogni 2h, ~07:00–21:00 (default)          |
+| `0 5-20 * * *`    | ogni ora, ~07:00–22:00 (default)         |
 | `*/30 6-20 * * *` | ogni 30 min, ~08:00–22:00                |
 | `0 6 * * *`       | una volta al giorno, ~08:00             |
 
@@ -123,7 +132,7 @@ Usa https://crontab.guru per comporre l'espressione.
 - **Puntualità**: gli scheduled workflow di GitHub possono ritardare di alcuni
   minuti sotto carico. Per un alert non time-critical è irrilevante.
 - **Inattività**: GitHub disabilita i cron dopo 60 giorni senza commit nel repo.
-  Il bot committa `state.json` ad ogni rilevamento, quindi in pratica resta
+  Il bot committa il file di stato ad ogni rilevamento, quindi in pratica resta
   sempre attivo; in periodi morti basta un commit qualsiasi per riattivarlo.
 - **Solo nuovi articoli**: la v1 notifica un articolo una volta sola. Non rileva
   *modifiche* a un articolo già visto (vedi sotto).
