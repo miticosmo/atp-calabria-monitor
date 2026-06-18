@@ -35,7 +35,7 @@ DEFAULT_SITE = "https://www.istruzioneatprc.it"
 HTTP_TIMEOUT = 30  # secondi
 MAX_RETRIES = 3
 RETRY_BACKOFF = 5  # secondi
-TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per non saturare l'API Telegram
+TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per anti-flood
 
 
 class Config:
@@ -126,6 +126,7 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     raise RuntimeError(f"Impossibile recuperare i post dopo {MAX_RETRIES} tentativi") from last_exc
 
 
+# Regex robusta per catturare tag ancorati su più linee senza lanciare eccezioni re.error
 _ALLEGATI_RE = re.compile(
     r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx)(?:\?[^"\']*)?)["\'][^>]*>([\s\S]*?)</a>',
     re.IGNORECASE
@@ -133,7 +134,7 @@ _ALLEGATI_RE = re.compile(
 
 
 def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
-    """Estrae tutti i link ai file allegati salvaguardando la formattazione."""
+    """Estrae tutti i link ai file allegati pulendone il testo di anteprima."""
     content = post.get("content", {}).get("rendered", "")
     attachments = []
     matches = _ALLEGATI_RE.findall(content)
@@ -152,7 +153,7 @@ def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def match_categories(post: dict[str, Any], cfg: Config) -> bool:
-    """Verifica se il post appartiene ad almeno una delle categorie scelte."""
+    """Verifica se il post appartiene ad almeno una delle categorie abilitate."""
     if not cfg.categories:
         return True
     terms = post.get("_embedded", {}).get("wp:term", [])
@@ -166,16 +167,14 @@ def match_categories(post: dict[str, Any], cfg: Config) -> bool:
 
 
 def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str, str]]) -> str:
-    """Costruisce il layout grafico del messaggio copiando fedelmente lo stile richiesto."""
-    # Pulizia dai tag HTML
+    """Costruisce la struttura grafica esatta richiesta nel mockup visivo."""
+    # Rimozione dei tag grezzi dall'HTML
     raw_title = re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", ""))
     raw_excerpt = re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))
 
-    # Risoluzione entità native WordPress (unescape) prima dei filtri Telegram
+    # Unescape preventivo per convertire i codici nativi WordPress (es. &#8211;) in testo leggibile
     clean_title = html.unescape(raw_title).strip()
     clean_excerpt = html.unescape(raw_excerpt).strip()
-
-    # Rimozione indicatori di taglio ellittici nativi
     clean_excerpt = re.sub(r'\[&hellip;\]|\[\.\.\.\]', '...', clean_excerpt)
 
     if len(clean_excerpt) > 280:
@@ -184,7 +183,7 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     title = html.escape(clean_title)
     excerpt = html.escape(clean_excerpt)
 
-    # Formattazione data localizzata (es: 12 giugno 2026)
+    # Traduzione della data nel formato italiano standard (es: 12 giugno 2026)
     date_raw = post.get("date", "")
     date_formatted = date_raw
     match_date = re.match(r"(\d{4})-(\d{2})-(\d{2})", date_raw)
@@ -197,7 +196,7 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
         }
         date_formatted = f"{int(day)} {months_it.get(month, month)} {year}"
 
-    # Estrazione dei nomi delle categorie reali dell'articolo
+    # Estrazione delle categorie reali assegnate all'articolo
     category_names = []
     terms = post.get("_embedded", {}).get("wp:term", [])
     for term_list in terms:
@@ -205,18 +204,18 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
             if term.get("taxonomy") == "category":
                 category_names.append(term.get("name", ""))
 
-    # Pulizia duplicati categorie mantenendo l'ordine
+    # Rimozione dei duplicati mantenendo l'allineamento ordinato
     seen = set()
     category_names = [x for x in category_names if x and not (x in seen or seen.add(x))]
     categories_str = " · ".join(category_names)
 
-    # COMPOSIZIONE STRUTTURA VISIVA IDENTICA ALLO SCREENSHOT
+    # COSTRUZIONE DEL MESSAGGIO CON SEPARATORI GEOMETRICI E CORREZIONE RETTANGOLO ROSSO
     msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n"
     msg += "➖ ➖ ➖ ➖ ➖ ➖ ➖\n"
     msg += f"<b>{title}</b>\n\n"
 
     if excerpt and excerpt != "...":
-        msg += f"<i>{excerpt}</i>\n\n"
+        msg += f"<i>{excerpt}</i>\n\n"  # Inserisce il testo dell'articolo in corsivo
 
     msg += f"📅 {date_formatted}\n"
 
@@ -233,7 +232,7 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
 
 
 def send_telegram_message(cfg: Config, text: str, reply_markup: dict | None = None) -> bool:
-    """Invia il payload strutturato alle API di Telegram."""
+    """Invia il payload formattato alle API di Telegram."""
     url = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
     payload = {
         "chat_id": cfg.chat_id,
@@ -304,7 +303,7 @@ def main() -> None:
 
         inline_keyboard = [[{"text": "📄 Apri avviso", "url": post.get("link", "")}]]
         if attachments:
-            for att in attachments[:2]:  # Massimo due bottoni veloci sotto il testo
+            for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])
 
         reply_markup = {"inline_keyboard": inline_keyboard}
