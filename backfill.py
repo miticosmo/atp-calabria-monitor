@@ -23,15 +23,48 @@ PER_PAGE = 100
 HTTP_TIMEOUT = 30
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
 
-# Emoji dedicata per dare priorità visiva alle categorie principali
+# Emoji dedicata per dare priorità visiva alle categorie principali.
+# Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
 CATEGORY_EMOJI = {
-    "grad": "🎓",
-    "doc": "👨‍🏫",
-    "recl": "📋",
-    "mob": "🔄",
-    "avvisi": "⚠️",
-    "ata": "🗂️",
-    "notizie": "📰",
+    # Personale
+    "doc": "👨‍🏫",                                  # Docenti
+    "ata": "🗂️",                                    # ATA
+    "dir": "👔", "ds": "👔", "dirig": "👔",          # Dirigenti / Dirigenti scolastici
+    "irc": "✝️",                                     # Insegnanti di religione
+    "personale-educativo": "🧑‍🏫",                  # Personale educativo
+    # Procedure
+    "grad": "🎓", "graduatorie": "🎓",               # Graduatorie
+    "recl": "📋", "reclutamento": "📋",              # Reclutamento
+    "mob": "🔄", "news": "🔄",                       # Mobilità (VV usa lo slug "news")
+    "utilass": "🔁",                                 # Utilizzazioni - Assegnazioni
+    "gps": "📊",                                     # GPS
+    "conc": "📝", "concdoc2016": "📝",               # Concorsi
+    "organico": "🏫", "organici": "🏫",              # Organico
+    # Comunicazioni
+    "notizie": "📰", "ccn": "📰",                    # Notizie / Circolari-Comunicazioni-Notizie
+    "newscuole": "📰", "news-scuole": "📰",          # News Scuole
+    "circusr": "📄", "circmiur": "📄",               # Circolari USR / MIUR
+    "avvisi": "⚠️",                                  # Avvisi
+    "int": "❓",                                     # Interpelli
+    "attinotifica": "📌", "atti-di-notifica": "📌",  # Atti di notifica
+    "modulistica": "🧾",                             # Modulistica
+    # Utenti
+    "stu": "🎒", "us": "🎒",                         # Studenti / Utenti scuola
+    "gen": "👪",                                     # Genitori
+    # Eventi / Varie
+    "event": "📅",                                   # Eventi
+    "form": "📚",                                    # Formazione
+    "calscol": "🗓️",                                 # Calendari scolastici
+    "esami-di-stato": "📖",                          # Esami di Stato / Maturità
+    "sns": "⛪", "scuole-paritarie": "⛪",            # Scuole paritarie
+    "cessazione-pensione": "🏖️",                     # Cessazioni - Pensioni
+}
+
+# Fallback per "famiglie" di categorie con tante varianti per anno
+_CATEGORY_PREFIX = {
+    "immruolo": "🪪",     # Immissioni in ruolo (varie annualità)
+    "esastato": "📖",     # Esami di Stato (varie annualità)
+    "ematurita": "📖",    # Esami di Maturità
 }
 
 _MONTHS_IT = {
@@ -75,7 +108,13 @@ def _format_categories(post: dict[str, Any]) -> str:
             if not name or name in seen:
                 continue
             seen.add(name)
-            emoji = CATEGORY_EMOJI.get(term.get("slug", "").lower(), "")
+            slug = term.get("slug", "").lower()
+            emoji = CATEGORY_EMOJI.get(slug, "")
+            if not emoji:
+                for prefix, prefix_emoji in _CATEGORY_PREFIX.items():
+                    if slug.startswith(prefix):
+                        emoji = prefix_emoji
+                        break
             parts.append(f"{emoji} {name}".strip())
     return " · ".join(parts)
 
@@ -144,15 +183,62 @@ _ALLEGATI_RE = re.compile(
     re.IGNORECASE
 )
 
+# Link al visualizzatore "Albo Pretorio" (RC): non è un file diretto ma una pagina
+# che contiene gli allegati reali. Va seguito per estrarne i PDF/ZIP effettivi.
+_ALBO_RE = re.compile(
+    r'href=["\']([^"\']*albopretorio/\?action=visatto[^"\']*)["\']',
+    re.IGNORECASE
+)
+
+
+def _fetch_html(url: str) -> str:
+    """Scarica una pagina HTML restituendo stringa vuota in caso di errore."""
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (USP-Backfill)"},
+            timeout=HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.text
+    except requests.RequestException as exc:
+        print(f"  Impossibile risolvere l'allegato Albo Pretorio ({url}): {exc}", file=sys.stderr)
+        return ""
+
+
 def extract_attachments(post: dict) -> list[dict[str, str]]:
+    """Estrae i link ai file allegati pulendone il testo di anteprima.
+
+    Logica identica a monitor.py per garantire un output uniforme tra le province.
+    Gestisce sia i link diretti a file (VV) sia il visualizzatore Albo Pretorio (RC),
+    che viene seguito per estrarre i file reali pubblicati sulla pagina dell'atto.
+    """
     content = post.get("content", {}).get("rendered", "")
-    matches = _ALLEGATI_RE.findall(content)
-    attachments = []
-    for url, raw_text in matches:
-        clean_text = html.unescape(re.sub(r"<[^>]+>", "", raw_text)).strip()
-        if not clean_text or clean_text.lower() in ["scarica", "allegato", "pdf", "clicca qui", "qui"]:
-            clean_text = url.split("/")[-1]
-        attachments.append({"url": url, "text": clean_text})
+
+    pairs: list[tuple[str, str]] = list(_ALLEGATI_RE.findall(content))
+    for albo_url in _ALBO_RE.findall(content):
+        page = _fetch_html(html.unescape(albo_url.strip()))
+        if page:
+            pairs.extend(_ALLEGATI_RE.findall(page))
+
+    attachments: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for url, text in pairs:
+        url = url.strip()
+        if url in seen:
+            continue
+        seen.add(url)
+
+        clean_text = re.sub(r'<[^>]+>', '', text).strip()
+        if not clean_text:
+            clean_text = url.split("/")[-1].split("?")[0]
+
+        clean_text = html.unescape(clean_text)
+        if len(clean_text) > 25:
+            clean_text = clean_text[:22] + "..."
+
+        safe_name = html.escape(clean_text)
+        attachments.append({"name": safe_name, "url": url})
     return attachments
 
 def matches_filter(post: dict, wanted: set[str]) -> bool:
@@ -194,7 +280,7 @@ def format_message(post: dict, provincia: str) -> str:
 
     # COSTRUZIONE DEL MESSAGGIO IDENTICA A monitor.py
     msg = f"📢 <b>USP {provincia} — Nuovo avviso</b>\n"
-    msg += "➖ ➖ ➖ ➖ ➖ ➖ ➖\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"<b>{title}</b>\n\n"
 
     if excerpt and excerpt != "...":
@@ -215,12 +301,8 @@ def format_message(post: dict, provincia: str) -> str:
     if attachments:
         msg += f"\n📎 <b>Allegati rilevati ({len(attachments)}):</b>\n"
         for att in attachments:
-            name = html.unescape(att['text'])
-            if len(name) > 25:
-                name = name[:22] + "..."
-            safe_name = html.escape(name)
             safe_url = html.escape(att['url'])
-            msg += f"• <a href='{safe_url}'>{safe_name}</a>\n"
+            msg += f"• <a href='{safe_url}'>{att['name']}</a>\n"
 
     return _truncate_telegram(msg)
 
@@ -272,10 +354,7 @@ def main() -> int:
 
             inline_keyboard = [[{"text": "📄 Apri pagina avviso", "url": p.get("link", "")}]]
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
-                name = html.unescape(att["text"])
-                if len(name) > 25:
-                    name = name[:22] + "..."
-                inline_keyboard.append([{"text": f"⬇️ {name}", "url": att["url"]}])
+                inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att["url"]}])
             reply_markup = {"inline_keyboard": inline_keyboard}
 
             if send_message(cfg, text, reply_markup):
