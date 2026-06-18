@@ -143,5 +143,149 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
 # Regex per estrarre tutti i link che portano a file allegati nel testo
 _ALLEGATI_RE = re.compile(r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx))["\'][^>]*>(.*?)</a>', re.IGNORECASE)
 
+
 def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
-    """Estrae tutti i link ai file allegati (PDF, ZIP, Excel, Word)"""
+    """Estrae tutti i link ai file allegati (PDF, ZIP, Excel, Word) dal testo HTML."""
+    content = post.get("content", {}).get("rendered", "")
+    attachments = []
+    matches = _ALLEGATI_RE.findall(content)
+    for url, text in matches:
+        clean_text = re.sub(r'<[^>]+>', '', text).strip()
+        if not clean_text:
+            clean_text = url.split("/")[-1]
+        if len(clean_text) > 25:
+            clean_text = clean_text[:22] + "..."
+        attachments.append({"name": clean_text, "url": url})
+    return attachments
+
+
+def match_categories(post: dict[str, Any], cfg: Config) -> bool:
+    """Verifica se il post appartiene ad almeno una delle categorie scelte."""
+    if not cfg.categories:
+        return True
+    terms = post.get("_embedded", {}).get("wp:term", [])
+    for term_list in terms:
+        for term in term_list:
+            if term.get("taxonomy") == "category":
+                slug = term.get("slug", "").lower()
+                if slug in cfg.categories:
+                    return True
+    return False
+
+
+def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str, str]]) -> str:
+    """Costruisce il layout grafico del messaggio in HTML per Telegram."""
+    title = html.escape(re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", "")))
+    excerpt = html.escape(re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))).strip()
+
+    if len(excerpt) > 280:
+        excerpt = excerpt[:277] + "..."
+
+    date_str = post.get("date", "").replace("T", " ")
+
+    msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n\n"
+    msg += f"📌 <b>{title}</b>\n\n"
+    if excerpt:
+        msg += f"📝 <i>{excerpt}</i>\n\n"
+    msg += f"📅 Pubblicato il: {date_str}\n"
+
+    if attachments:
+        msg += "\n📎 <b>Allegati rilevati:</b>\n"
+        for att in attachments:
+            msg += f"• <a href='{att['url']}'>{att['name']}</a>\n"
+
+    return msg
+
+
+def send_telegram_message(cfg: Config, text: str, reply_markup: dict | None = None) -> bool:
+    """Invia fisicamente il payload strutturato alle API di Telegram."""
+    url = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
+    payload = {
+        "chat_id": cfg.chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code != 200:
+            log.error("[%s] Errore API Telegram (%d): %s", cfg.provincia, resp.status_code, resp.text)
+            return False
+        return True
+    except Exception as exc:
+        log.error("[%s] Errore di rete nell'invio a Telegram: %s", cfg.provincia, exc)
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# Core Loop Principale
+# --------------------------------------------------------------------------- #
+
+def main() -> None:
+    cfg = Config()
+    state = load_state(cfg.state_file)
+    seen_ids = set(state.get("seen_ids", []))
+    seeded = state.get("seeded", False)
+
+    try:
+        posts = fetch_posts(cfg)
+    except Exception as err:
+        log.error("[%s] Arresto run per errore fetch: %s", cfg.provincia, err)
+        sys.exit(1)
+
+    valid_posts = [p for p in posts if p.get("id") and match_categories(p, cfg)]
+
+    if not valid_posts:
+        log.info("[%s] Nessun articolo corrisponde ai filtri di categoria imposti.", cfg.provincia)
+        save_state(cfg.state_file, seen_ids)
+        return
+
+    # Gestione Primo Avvio Silenzioso (Seeding)
+    if not seeded:
+        log.info("[%s] Inizializzazione: salvo silenziosamente %d articoli storici.", cfg.provincia, len(valid_posts))
+        for post in valid_posts:
+            seen_ids.add(post["id"])
+        save_state(cfg.state_file, seen_ids)
+        log.info("[%s] Database di stato sincronizzato. Pronto per le notifiche future.", cfg.provincia)
+        return
+
+    # Cerca nuove pubblicazioni (dalla più vecchia alla più recente)
+    new_posts = [p for p in valid_posts if p["id"] not in seen_ids]
+    new_posts.reverse()
+
+    if not new_posts:
+        log.info("[%s] Nessun nuovo avviso pubblicato rispetto all'ultimo controllo.", cfg.provincia)
+        save_state(cfg.state_file, seen_ids)
+        return
+
+    log.info("[%s] Rilevati %d nuovi avvisi! Preparo l'invio...", cfg.provincia, len(new_posts))
+
+    success_count = 0
+    for post in new_posts:
+        p_id = post["id"]
+        attachments = extract_attachments(post)
+        text = format_message(post, cfg, attachments)
+
+        inline_keyboard = [[{"text": "📄 Apri avviso", "url": post.get("link", "")}]]
+        if attachments:
+            for att in attachments[:2]:  # Massimo due bottoni veloci per non rompere la UI
+                inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])
+
+        reply_markup = {"inline_keyboard": inline_keyboard}
+
+        if send_telegram_message(cfg, text, reply_markup):
+            seen_ids.add(p_id)
+            success_count += 1
+            time.sleep(TELEGRAM_RATE_DELAY)  # Anti-flood delay
+        else:
+            log.warning("[%s] Invio fallito per post %d. Verrà ritentato nel prossimo ciclo.", cfg.provincia, p_id)
+
+    save_state(cfg.state_file, seen_ids)
+    log.info("[%s] Run terminata. Notifiche inviate con successo: %d.", cfg.provincia, success_count)
+
+
+if __name__ == "__main__":
+    main()
