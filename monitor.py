@@ -72,7 +72,7 @@ class Config:
 # --------------------------------------------------------------------------- #
 
 def load_state(path: Path) -> dict[str, Any]:
-    """Carica lo stato."""
+    """Carica lo stato del tracciamento degli articoli."""
     if not path.exists():
         return {"seen_ids": [], "seeded": False}
     try:
@@ -126,9 +126,8 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     raise RuntimeError(f"Impossibile recuperare i post dopo {MAX_RETRIES} tentativi") from last_exc
 
 
-# REGEX POTENZIATA: Supporta ritorni a capo [\s\S]*? e query parameters (?:\?[^"\']*)? dopo l'estensione
 _ALLEGATI_RE = re.compile(
-    r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx)(?:\?[^"\']*)?)["\'][[^>]*>([\s\S]*?)</a>',
+    r'<a\s+[^>]*href=["\']([^"\']+\.(?:pdf|zip|doc|docx|xls|xlsx)(?:\?[^"\']*)?)["\'][^>]*>([\s\S]*?)</a>',
     re.IGNORECASE
 )
 
@@ -139,15 +138,15 @@ def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
     attachments = []
     matches = _ALLEGATI_RE.findall(content)
     for url, text in matches:
-        # Rimuove tag interni al testo del link (es: span o strong)
         clean_text = re.sub(r'<[^>]+>', '', text).strip()
         if not clean_text:
-            # Se il testo è vuoto estrae il nome del file dall'URL rimovendo eventuali query string
             clean_text = url.split("/")[-1].split("?")[0]
+
+        # OTTIMIZZAZIONE: Unescape delle entità HTML anche per i titoli degli allegati
+        clean_text = html.unescape(clean_text)
         if len(clean_text) > 25:
             clean_text = clean_text[:22] + "..."
 
-        # IMPORTANTE: Eseguiamo l'escape del testo per evitare crash di parsing HTML su Telegram
         safe_name = html.escape(clean_text)
         attachments.append({"name": safe_name, "url": url.strip()})
     return attachments
@@ -168,25 +167,37 @@ def match_categories(post: dict[str, Any], cfg: Config) -> bool:
 
 
 def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str, str]]) -> str:
-    """Costruisce il layout grafico del messaggio in HTML per Telegram."""
-    title = html.escape(re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", "")))
-    excerpt = html.escape(re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))).strip()
+    """Costruisce il layout grafico del messaggio in HTML per Telegram ripristinando i caratteri speciali."""
+    # Rimuove i tag HTML interni
+    raw_title = re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", ""))
+    raw_excerpt = re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))
 
-    if len(excerpt) > 280:
-        excerpt = excerpt[:277] + "..."
+    # OTTIMIZZAZIONE CRUCIALE: html.unescape converte &#8211; nei rispettivi simboli prima dell'escape finale
+    clean_title = html.unescape(raw_title).strip()
+    clean_excerpt = html.unescape(raw_excerpt).strip()
+
+    # Rimuove gli indicatori nativi di interruzione di WordPress [...] se presenti
+    clean_excerpt = re.sub(r'\[&hellip;\]|\[\.\.\.\]', '...', clean_excerpt)
+
+    if len(clean_excerpt) > 280:
+        clean_excerpt = clean_excerpt[:277] + "..."
+
+    title = html.escape(clean_title)
+    excerpt = html.escape(clean_excerpt)
 
     date_str = post.get("date", "").replace("T", " ")
 
     msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n\n"
     msg += f"📌 <b>{title}</b>\n\n"
-    if excerpt:
+    if excerpt and excerpt != "...":
         msg += f"📝 <i>{excerpt}</i>\n\n"
     msg += f"📅 Pubblicato il: {date_str}\n"
 
     if attachments:
         msg += "\n📎 <b>Allegati rilevati:</b>\n"
         for att in attachments:
-            msg += f"• <a href='{att['url']}'>{att['name']}</a>\n"
+            safe_url = html.escape(att['url'])
+            msg += f"• <a href='{safe_url}'>{att['name']}</a>\n"
 
     return msg
 
