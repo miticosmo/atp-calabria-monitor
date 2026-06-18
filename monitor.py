@@ -142,7 +142,6 @@ def extract_attachments(post: dict[str, Any]) -> list[dict[str, str]]:
         if not clean_text:
             clean_text = url.split("/")[-1].split("?")[0]
 
-        # OTTIMIZZAZIONE: Unescape delle entità HTML anche per i titoli degli allegati
         clean_text = html.unescape(clean_text)
         if len(clean_text) > 25:
             clean_text = clean_text[:22] + "..."
@@ -167,16 +166,16 @@ def match_categories(post: dict[str, Any], cfg: Config) -> bool:
 
 
 def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str, str]]) -> str:
-    """Costruisce il layout grafico del messaggio in HTML per Telegram ripristinando i caratteri speciali."""
-    # Rimuove i tag HTML interni
+    """Costruisce il layout grafico del messaggio copiando fedelmente lo stile richiesto."""
+    # Pulizia dai tag HTML
     raw_title = re.sub(r'<[^>]+>', '', post.get("title", {}).get("rendered", ""))
     raw_excerpt = re.sub(r'<[^>]+>', '', post.get("excerpt", {}).get("rendered", ""))
 
-    # OTTIMIZZAZIONE CRUCIALE: html.unescape converte &#8211; nei rispettivi simboli prima dell'escape finale
+    # Risoluzione entità native WordPress (unescape) prima dei filtri Telegram
     clean_title = html.unescape(raw_title).strip()
     clean_excerpt = html.unescape(raw_excerpt).strip()
 
-    # Rimuove gli indicatori nativi di interruzione di WordPress [...] se presenti
+    # Rimozione indicatori di taglio ellittici nativi
     clean_excerpt = re.sub(r'\[&hellip;\]|\[\.\.\.\]', '...', clean_excerpt)
 
     if len(clean_excerpt) > 280:
@@ -185,13 +184,44 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     title = html.escape(clean_title)
     excerpt = html.escape(clean_excerpt)
 
-    date_str = post.get("date", "").replace("T", " ")
+    # Formattazione data localizzata (es: 12 giugno 2026)
+    date_raw = post.get("date", "")
+    date_formatted = date_raw
+    match_date = re.match(r"(\d{4})-(\d{2})-(\d{2})", date_raw)
+    if match_date:
+        year, month, day = match_date.groups()
+        months_it = {
+            "01": "gennaio", "02": "febbraio", "03": "marzo", "04": "aprile",
+            "05": "maggio", "06": "giugno", "07": "luglio", "08": "agosto",
+            "09": "settembre", "10": "ottobre", "11": "novembre", "12": "dicembre"
+        }
+        date_formatted = f"{int(day)} {months_it.get(month, month)} {year}"
 
-    msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n\n"
-    msg += f"📌 <b>{title}</b>\n\n"
+    # Estrazione dei nomi delle categorie reali dell'articolo
+    category_names = []
+    terms = post.get("_embedded", {}).get("wp:term", [])
+    for term_list in terms:
+        for term in term_list:
+            if term.get("taxonomy") == "category":
+                category_names.append(term.get("name", ""))
+
+    # Pulizia duplicati categorie mantenendo l'ordine
+    seen = set()
+    category_names = [x for x in category_names if x and not (x in seen or seen.add(x))]
+    categories_str = " · ".join(category_names)
+
+    # COMPOSIZIONE STRUTTURA VISIVA IDENTICA ALLO SCREENSHOT
+    msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n"
+    msg += "➖ ➖ ➖ ➖ ➖ ➖ ➖\n"
+    msg += f"<b>{title}</b>\n\n"
+
     if excerpt and excerpt != "...":
-        msg += f"📝 <i>{excerpt}</i>\n\n"
-    msg += f"📅 Pubblicato il: {date_str}\n"
+        msg += f"<i>{excerpt}</i>\n\n"
+
+    msg += f"📅 {date_formatted}\n"
+
+    if categories_str:
+        msg += f"🏷️ {categories_str}\n"
 
     if attachments:
         msg += "\n📎 <b>Allegati rilevati:</b>\n"
