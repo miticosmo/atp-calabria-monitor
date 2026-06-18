@@ -1,8 +1,8 @@
-name: USP VV Monitor
+name: USP RC Monitor
 
 on:
   schedule:
-    - cron: "10 5-20 * * *"
+    - cron: "0 5-20 * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.BOT_PUSH_TOKEN }}
+          token: ${{ secrets.BOT_PUSH_TOKEN }} # Sblocca i permessi usando la tua chiave personale
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,13 +31,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CATEGORIES: "grad,doc,recl,avvisi"
-          PROVINCIA: "Vibo Valentia"
-          SITE_BASE_URL: "https://www.istruzione.calabria.it/vibovalentia"
-          STATE_FILE: "state_vibo_valentia.json"
+          PROVINCIA: "Reggio Calabria"
+          SITE_BASE_URL: "https://www.istruzioneatprc.it"
         run: python monitor.py
 
       - name: Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: auto-update state_vibo_valentia.json [skip ci]"
-          file_pattern: "state_vibo_valentia.json"
+          commit_message: "chore: auto-update state.json [skip ci]"
+          file_pattern: "state.json"
