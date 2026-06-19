@@ -50,5 +50,5 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN_RC }}/sendMessage" \
             --data-urlencode chat_id="${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}" \
             --data-urlencode text="⚠️ Workflow FALLITO: USP RC Monitor
-Run: ${{ github.run_id }}
-Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            Run: ${{ github.run_id }}
+            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
