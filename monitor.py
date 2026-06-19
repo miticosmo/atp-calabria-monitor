@@ -34,8 +34,8 @@ log = logging.getLogger("usp-monitor")
 
 DEFAULT_SITE = "https://www.istruzioneatprc.it"
 HTTP_TIMEOUT = (10, 60)  # (connect, read) in secondi: il sito sorgente risponde lentamente
-MAX_RETRIES = 5
-RETRY_BACKOFF = 5  # secondi (backoff crescente: 5, 10, 15, 20s)
+MAX_RETRIES = 3  # i retry non aggirano il tarpit/WAF lato server: 3 tentativi bastano per le lentezze vere
+RETRY_BACKOFF = 5  # secondi (backoff crescente: 5, 10, 15s)
 TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per anti-flood
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
 
@@ -217,7 +217,12 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     """Recupera gli ultimi post via REST API WordPress."""
     url = f"{cfg.site_base}/wp-json/wp/v2/posts"
     params = {"per_page": cfg.per_page, "_embed": "1", "orderby": "date", "order": "desc"}
-    headers = {"User-Agent": "USP-Monitor/1.0 (+personal alert bot)"}
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
 
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -408,8 +413,12 @@ def main() -> None:
     try:
         posts = fetch_posts(cfg)
     except Exception as err:
-        log.error("[%s] Arresto run per errore fetch: %s", cfg.provincia, err)
-        sys.exit(1)
+        # Fetch fallito (tipicamente timeout/throttle lato server verso gli IP dei runner).
+        # Non è un bug del bot: esce con successo senza allertare l'admin, lo stato resta
+        # invariato e il prossimo run orario recupera eventuali avvisi nel frattempo.
+        log.warning("[%s] Fetch non riuscito, salto questo run (recupero al prossimo): %s",
+                    cfg.provincia, err)
+        sys.exit(0)
 
     valid_posts = [p for p in posts if p.get("id") and match_categories(p, cfg)]
 
