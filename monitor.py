@@ -33,9 +33,9 @@ logging.basicConfig(
 log = logging.getLogger("usp-monitor")
 
 DEFAULT_SITE = "https://www.istruzioneatprc.it"
-HTTP_TIMEOUT = 30  # secondi
-MAX_RETRIES = 3
-RETRY_BACKOFF = 5  # secondi
+HTTP_TIMEOUT = (10, 60)  # (connect, read) in secondi: il sito sorgente risponde lentamente
+MAX_RETRIES = 5
+RETRY_BACKOFF = 5  # secondi (backoff crescente: 5, 10, 15, 20s)
 TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per anti-flood
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
 

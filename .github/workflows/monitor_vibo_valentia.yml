@@ -34,6 +34,7 @@ jobs:
           PROVINCIA: "Vibo Valentia"
           SITE_BASE_URL: "https://www.istruzione.calabria.it/vibovalentia"
           STATE_FILE: "state_vibo_valentia.json"
+          PER_PAGE: "15"
         run: python monitor.py
 
       - name: Commit and Push changes
