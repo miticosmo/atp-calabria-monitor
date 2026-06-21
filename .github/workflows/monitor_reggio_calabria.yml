@@ -2,7 +2,13 @@ name: USP RC Monitor
 
 on:
   schedule:
-    - cron: "0 5-20 * * *"
+    # Slot temporari di test (orari italiani CEST -> UTC):
+    # 10:00, 13:00, 15:30, 18:00, 23:00 IT
+    - cron: "0 8 * * *"
+    - cron: "0 11 * * *"
+    - cron: "30 13 * * *"
+    - cron: "0 16 * * *"
+    - cron: "0 21 * * *"
   workflow_dispatch:
 
 jobs:

@@ -2,7 +2,13 @@ name: USP VV Monitor
 
 on:
   schedule:
-    - cron: "10 5-20 * * *"
+    # Slot temporari di test (orari italiani CEST -> UTC), sfasati di +5 min
+    # rispetto a RC per evitare conflitti di push: 10:05, 13:05, 15:35, 18:05, 23:05 IT
+    - cron: "5 8 * * *"
+    - cron: "5 11 * * *"
+    - cron: "35 13 * * *"
+    - cron: "5 16 * * *"
+    - cron: "5 21 * * *"
   workflow_dispatch:
 
 jobs:
