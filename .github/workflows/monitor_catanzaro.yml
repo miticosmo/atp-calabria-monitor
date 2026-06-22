@@ -41,6 +41,7 @@ jobs:
           SITE_BASE_URL: "https://www.istruzione.calabria.it/catanzaro"
           STATE_FILE: "state_catanzaro.json"
           PER_PAGE: "15"
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: python monitor.py
 
       - name: Commit and Push changes

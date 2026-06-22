@@ -24,6 +24,11 @@ HTTP_TIMEOUT = 30
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
 DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato sotto ogni avviso
 
+# Proxy opzionale, applicato SOLO alle richieste verso il sito sorgente (non a Telegram).
+# Serve alle province su istruzione.calabria.it che bloccano gli IP datacenter.
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+SOURCE_PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
 CATEGORY_EMOJI = {
@@ -161,7 +166,7 @@ def fetch_range(cfg: LocalConfig, date_from: str, date_to: str) -> list[dict]:
     posts: list[dict] = []
     while True:
         try:
-            resp = requests.get(url, params=params, headers={"User-Agent": "USP-Backfill/1.0"}, timeout=HTTP_TIMEOUT)
+            resp = requests.get(url, params=params, headers={"User-Agent": "USP-Backfill/1.0"}, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
             if resp.status_code == 400 and params["page"] > 1:
                 break
             resp.raise_for_status()
@@ -199,6 +204,7 @@ def _fetch_html(url: str) -> str:
             url,
             headers={"User-Agent": "Mozilla/5.0 (USP-Backfill)"},
             timeout=HTTP_TIMEOUT,
+            proxies=SOURCE_PROXIES,
         )
         resp.raise_for_status()
         return resp.text
