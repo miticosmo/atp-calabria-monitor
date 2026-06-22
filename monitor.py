@@ -38,6 +38,7 @@ MAX_RETRIES = 3  # i retry non aggirano il tarpit/WAF lato server: 3 tentativi b
 RETRY_BACKOFF = 5  # secondi (backoff crescente: 5, 10, 15s)
 TELEGRAM_RATE_DELAY = 1.0  # pausa tra messaggi per anti-flood
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
+DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato sotto ogni avviso
 
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
@@ -455,6 +456,7 @@ def main() -> None:
         if attachments:
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])
+        inline_keyboard.append([{"text": "☕ Offri un caffè per il progetto", "url": DONATION_URL}])
 
         reply_markup = {"inline_keyboard": inline_keyboard}
 

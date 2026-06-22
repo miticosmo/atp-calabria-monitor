@@ -22,6 +22,7 @@ THROTTLE_SECONDS = 2.5
 PER_PAGE = 100
 HTTP_TIMEOUT = 30
 TELEGRAM_MAX_LEN = 4096  # limite massimo caratteri di un messaggio Telegram
+DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato sotto ogni avviso
 
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
@@ -355,6 +356,7 @@ def main() -> int:
             inline_keyboard = [[{"text": "📄 Apri pagina avviso", "url": p.get("link", "")}]]
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att["url"]}])
+            inline_keyboard.append([{"text": "☕ Offri un caffè per il progetto", "url": DONATION_URL}])
             reply_markup = {"inline_keyboard": inline_keyboard}
 
             if send_message(cfg, text, reply_markup):
