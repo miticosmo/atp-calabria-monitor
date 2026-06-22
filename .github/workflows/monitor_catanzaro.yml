@@ -1,0 +1,61 @@
+name: USP CZ Monitor
+
+on:
+  schedule:
+    # Slot temporari di test (orari italiani CEST -> UTC), sfasati di +10 min
+    # rispetto a RC per evitare conflitti di push: 10:10, 13:10, 15:40, 18:10, 23:10 IT
+    - cron: "10 8 * * *"
+    - cron: "10 11 * * *"
+    - cron: "40 13 * * *"
+    - cron: "10 16 * * *"
+    - cron: "10 21 * * *"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BOT_PUSH_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run Monitor Script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_CZ }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_CZ }}
+          CATEGORIES: ""
+          PROVINCIA: "Catanzaro"
+          SITE_BASE_URL: "https://www.istruzione.calabria.it/catanzaro"
+          STATE_FILE: "state_catanzaro.json"
+          PER_PAGE: "15"
+        run: python monitor.py
+
+      - name: Commit and Push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: auto-update state_catanzaro.json [skip ci]"
+          file_pattern: "state_catanzaro.json"
+
+      # Avviso Telegram all'amministratore solo se il run fallisce.
+      # Usa il bot RC perché è l'unico abilitato a inviare DM in privato.
+      - name: Notifica fallimento su Telegram
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN_RC }}/sendMessage" \
+            --data-urlencode chat_id="${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}" \
+            --data-urlencode text="⚠️ Workflow FALLITO: USP CZ Monitor
+            Run: ${{ github.run_id }}
+            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
