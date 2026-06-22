@@ -45,6 +45,7 @@ DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato 
 # gli IP datacenter dei runner GitHub. Se PROXY_URL non è impostato, le richieste sono dirette.
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 SOURCE_PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+_SOURCE_USE_PROXY = False  # diventa True quando il tentativo diretto fallisce e si passa al proxy
 
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
@@ -220,6 +221,33 @@ def save_state(path: Path, seen_ids: set[int]) -> None:
 # Fetch e parsing articoli (WordPress REST API)
 # --------------------------------------------------------------------------- #
 
+def _get_source(url: str, *, params: dict | None = None, headers: dict | None = None) -> requests.Response:
+    """GET verso il sito sorgente con fallback automatico al proxy.
+
+    Prima tenta la richiesta diretta (IP del runner GitHub) per non consumare
+    banda del proxy; solo se fallisce e PROXY_URL è configurato ripiega sul proxy.
+    La scelta viene ricordata per le richieste successive dello stesso run, così
+    una volta accertato che il diretto è bloccato non si riprova ogni volta.
+    """
+    global _SOURCE_USE_PROXY
+    if _SOURCE_USE_PROXY and SOURCE_PROXIES:
+        resp = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
+        resp.raise_for_status()
+        return resp
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        return resp
+    except requests.RequestException as exc:
+        if not SOURCE_PROXIES:
+            raise
+        log.warning("Tentativo diretto fallito (%s). Passo al proxy.", exc)
+        _SOURCE_USE_PROXY = True
+        resp = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
+        resp.raise_for_status()
+        return resp
+
+
 def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     """Recupera gli ultimi post via REST API WordPress."""
     url = f"{cfg.site_base}/wp-json/wp/v2/posts"
@@ -234,8 +262,7 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
-            resp.raise_for_status()
+            resp = _get_source(url, params=params, headers=headers)
             posts = resp.json()
             log.info("[%s] Recuperati %d post dalla REST API.", cfg.provincia, len(posts))
             return posts
@@ -267,13 +294,7 @@ _ALBO_RE = re.compile(
 def _fetch_html(url: str) -> str:
     """Scarica una pagina HTML restituendo stringa vuota in caso di errore."""
     try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (USP-Monitor)"},
-            timeout=HTTP_TIMEOUT,
-            proxies=SOURCE_PROXIES,
-        )
-        resp.raise_for_status()
+        resp = _get_source(url, headers={"User-Agent": "Mozilla/5.0 (USP-Monitor)"})
         return resp.text
     except requests.RequestException as exc:
         log.warning("Impossibile risolvere l'allegato Albo Pretorio (%s): %s", url, exc)

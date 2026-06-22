@@ -28,6 +28,28 @@ DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato 
 # Serve alle province su istruzione.calabria.it che bloccano gli IP datacenter.
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 SOURCE_PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+_SOURCE_USE_PROXY = False  # diventa True quando il tentativo diretto fallisce e si passa al proxy
+
+
+def _get_source(url: str, *, params: dict | None = None, headers: dict | None = None) -> requests.Response:
+    """GET verso il sito sorgente: prima diretto (IP runner), poi proxy come fallback.
+
+    Non esegue raise_for_status: i chiamanti gestiscono i codici di stato
+    (es. il 400 di fine paginazione in fetch_range). Il fallback al proxy scatta
+    solo sulle eccezioni di rete (timeout/connessione), tipiche del blocco IP.
+    """
+    global _SOURCE_USE_PROXY
+    if _SOURCE_USE_PROXY and SOURCE_PROXIES:
+        return requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
+    try:
+        return requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as exc:
+        if not SOURCE_PROXIES:
+            raise
+        print(f"  Tentativo diretto fallito ({exc}). Passo al proxy.", file=sys.stderr)
+        _SOURCE_USE_PROXY = True
+        return requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
+
 
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
@@ -166,7 +188,7 @@ def fetch_range(cfg: LocalConfig, date_from: str, date_to: str) -> list[dict]:
     posts: list[dict] = []
     while True:
         try:
-            resp = requests.get(url, params=params, headers={"User-Agent": "USP-Backfill/1.0"}, timeout=HTTP_TIMEOUT, proxies=SOURCE_PROXIES)
+            resp = _get_source(url, params=params, headers={"User-Agent": "USP-Backfill/1.0"})
             if resp.status_code == 400 and params["page"] > 1:
                 break
             resp.raise_for_status()
@@ -200,12 +222,7 @@ _ALBO_RE = re.compile(
 def _fetch_html(url: str) -> str:
     """Scarica una pagina HTML restituendo stringa vuota in caso di errore."""
     try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (USP-Backfill)"},
-            timeout=HTTP_TIMEOUT,
-            proxies=SOURCE_PROXIES,
-        )
+        resp = _get_source(url, headers={"User-Agent": "Mozilla/5.0 (USP-Backfill)"})
         resp.raise_for_status()
         return resp.text
     except requests.RequestException as exc:
