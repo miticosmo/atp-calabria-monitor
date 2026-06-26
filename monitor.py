@@ -379,7 +379,8 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     author = _extract_author(post)
 
     # COSTRUZIONE DEL MESSAGGIO CON SEPARATORI GEOMETRICI
-    msg = f"📢 <b>USP {cfg.provincia} — Nuovo avviso</b>\n"
+    msg = f"📢 <b>Ambito Territoriale di {cfg.provincia}</b>\n"
+    msg += "🔔 <b>Nuovo avviso</b>\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"<b>{title}</b>\n\n"
 

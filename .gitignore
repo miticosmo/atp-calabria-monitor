@@ -1,2 +1,7 @@
 __pycache__/
 files.zip
+
+# Segreti locali (mai committare)
+.env
+.env.local
+_test_invio.py

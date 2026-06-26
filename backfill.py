@@ -303,7 +303,8 @@ def format_message(post: dict, provincia: str) -> str:
     author = _extract_author(post)
 
     # COSTRUZIONE DEL MESSAGGIO IDENTICA A monitor.py
-    msg = f"📢 <b>USP {provincia} — Nuovo avviso</b>\n"
+    msg = f"📢 <b>Ambito Territoriale di {provincia}</b>\n"
+    msg += "🔔 <b>Nuovo avviso</b>\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"<b>{title}</b>\n\n"
 
