@@ -42,6 +42,8 @@ jobs:
           STATE_FILE: "state_vibo_valentia.json"
           PER_PAGE: "15"
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          ADMIN_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_RC }}
+          ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
         run: python monitor.py
 
       - name: Commit and Push changes

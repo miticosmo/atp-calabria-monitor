@@ -169,6 +169,14 @@ class Config:
         self.state_file = Path(os.environ.get("STATE_FILE", "state.json"))
         self.provincia = os.environ.get("PROVINCIA", "Reggio Calabria").strip()
 
+        # Alert admin opzionale dopo N run consecutive con fetch fallito. Il fetch fallito
+        # esce con codice 0 (vedi main()) per non intasare l'admin ad ogni blocco transitorio
+        # del WAF, quindi il step "failure()" del workflow non scatterebbe mai: questo è
+        # l'unico modo per accorgersi se un bot resta bloccato per giorni senza notificarlo.
+        self.admin_bot_token = os.environ.get("ADMIN_BOT_TOKEN", "").strip()
+        self.admin_chat_id = os.environ.get("ADMIN_CHAT_ID", "").strip()
+        self.max_consecutive_failures = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "3"))
+
         raw_cats = os.environ.get("CATEGORIES", "").strip()
         self.categories = {c.strip().lower() for c in raw_cats.split(",") if c.strip()}
 
@@ -194,22 +202,24 @@ class Config:
 def load_state(path: Path) -> dict[str, Any]:
     """Carica lo stato del tracciamento degli articoli."""
     if not path.exists():
-        return {"seen_ids": [], "seeded": False}
+        return {"seen_ids": [], "seeded": False, "consecutive_failures": 0}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         data.setdefault("seen_ids", [])
         data.setdefault("seeded", bool(data["seen_ids"]))
+        data.setdefault("consecutive_failures", 0)
         return data
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("Stato non leggibile (%s). Reinizializzo.", exc)
-        return {"seen_ids": [], "seeded": False}
+        return {"seen_ids": [], "seeded": False, "consecutive_failures": 0}
 
 
-def save_state(path: Path, seen_ids: set[int]) -> None:
+def save_state(path: Path, seen_ids: set[int], *, consecutive_failures: int = 0) -> None:
     """Salva lo stato in modo atomico."""
     payload = {
         "seen_ids": sorted(seen_ids),
         "seeded": True,
+        "consecutive_failures": consecutive_failures,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -259,11 +269,25 @@ def fetch_posts(cfg: Config) -> list[dict[str, Any]]:
         )
     }
 
+    global _SOURCE_USE_PROXY
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = _get_source(url, params=params, headers=headers)
-            posts = resp.json()
+            try:
+                posts = resp.json()
+            except ValueError as exc:
+                # Risposta HTTP 200 ma corpo non-JSON: quasi sempre una pagina di blocco/
+                # challenge del WAF (l'IP datacenter del runner viene accettato a livello
+                # TCP ma servito con una pagina fittizia invece di un errore HTTP). _get_source
+                # non lo rileva perché non solleva RequestException, quindi il fallback al
+                # proxy non scatterebbe mai: lo forziamo qui esplicitamente.
+                snippet = resp.text[:150].replace("\n", " ")
+                log.warning("[%s] Risposta 200 non-JSON (probabile blocco WAF): %r", cfg.provincia, snippet)
+                if SOURCE_PROXIES and not _SOURCE_USE_PROXY:
+                    log.warning("[%s] Passo al proxy per il prossimo tentativo.", cfg.provincia)
+                    _SOURCE_USE_PROXY = True
+                raise
             log.info("[%s] Recuperati %d post dalla REST API.", cfg.provincia, len(posts))
             return posts
         except (requests.RequestException, ValueError) as exc:
@@ -413,6 +437,36 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     return _truncate_telegram(msg)
 
 
+def notify_admin_fetch_failure(cfg: Config, consecutive_failures: int, err: Exception) -> None:
+    """Avvisa l'amministratore quando il fetch fallisce per N run consecutive.
+
+    Il fetch fallito esce con codice 0 (per non allertare su singoli blocchi
+    transitori del WAF), quindi lo step 'failure()' del workflow GitHub Actions
+    non scatta mai in questo caso. Senza questo alert un bot potrebbe restare
+    bloccato per giorni in silenzio: nessun errore visibile, nessuna notifica,
+    solo un canale che smette di ricevere avvisi.
+    """
+    if not cfg.admin_bot_token or not cfg.admin_chat_id:
+        return
+    url = f"https://api.telegram.org/bot{cfg.admin_bot_token}/sendMessage"
+    text = (
+        f"⚠️ <b>USP Monitor — {html.escape(cfg.provincia)}</b>\n"
+        f"Fetch fallito per {consecutive_failures} run consecutive.\n"
+        f"Ultimo errore: {html.escape(str(err))[:300]}\n"
+        f"Il canale potrebbe non ricevere nuovi avvisi finché il blocco persiste."
+    )
+    try:
+        resp = requests.post(
+            url,
+            json={"chat_id": cfg.admin_chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.error("[%s] Alert admin non inviato (%d): %s", cfg.provincia, resp.status_code, resp.text)
+    except Exception as exc:
+        log.error("[%s] Errore di rete nell'invio dell'alert admin: %s", cfg.provincia, exc)
+
+
 def send_telegram_message(cfg: Config, text: str, reply_markup: dict | None = None) -> bool:
     """Invia il payload formattato alle API di Telegram."""
     url = f"https://api.telegram.org/bot{cfg.bot_token}/sendMessage"
@@ -445,29 +499,41 @@ def main() -> None:
     state = load_state(cfg.state_file)
     seen_ids = set(state.get("seen_ids", []))
     seeded = state.get("seeded", False)
+    consecutive_failures = state.get("consecutive_failures", 0)
 
     try:
         posts = fetch_posts(cfg)
     except Exception as err:
-        # Fetch fallito (tipicamente timeout/throttle lato server verso gli IP dei runner).
-        # Non è un bug del bot: esce con successo senza allertare l'admin, lo stato resta
+        # Fetch fallito (tipicamente blocco WAF/timeout verso gli IP dei runner).
+        # Non è un bug del bot di per sé: esce con successo così lo stato resta
         # invariato e il prossimo run orario recupera eventuali avvisi nel frattempo.
-        log.warning("[%s] Fetch non riuscito, salto questo run (recupero al prossimo): %s",
-                    cfg.provincia, err)
+        # Se però il fallimento si ripete per troppi run consecutivi, il blocco è
+        # probabilmente persistente (non transitorio): avvisiamo l'admin, perché
+        # altrimenti il canale può restare silenzioso per giorni senza che nessuno
+        # se ne accorga (exit 0 = "successo" agli occhi di GitHub Actions).
+        consecutive_failures += 1
+        log.warning("[%s] Fetch non riuscito (%d run consecutivi), salto questo run: %s",
+                    cfg.provincia, consecutive_failures, err)
+        if consecutive_failures >= cfg.max_consecutive_failures:
+            notify_admin_fetch_failure(cfg, consecutive_failures, err)
+        save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
         sys.exit(0)
+
+    # Fetch riuscito: azzera il contatore dei fallimenti consecutivi.
+    consecutive_failures = 0
 
     valid_posts = [p for p in posts if p.get("id") and match_categories(p, cfg)]
 
     if not valid_posts:
         log.info("[%s] Nessun articolo corrisponde ai filtri di categoria imposti.", cfg.provincia)
-        save_state(cfg.state_file, seen_ids)
+        save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
         return
 
     if not seeded:
         log.info("[%s] Inizializzazione: salvo silenziosamente %d articoli storici.", cfg.provincia, len(valid_posts))
         for post in valid_posts:
             seen_ids.add(post["id"])
-        save_state(cfg.state_file, seen_ids)
+        save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
         log.info("[%s] Database di stato sincronizzato. Pronto per le notifiche.", cfg.provincia)
         return
 
@@ -476,7 +542,7 @@ def main() -> None:
 
     if not new_posts:
         log.info("[%s] Nessun nuovo avviso pubblicato rispetto all'ultimo controllo.", cfg.provincia)
-        save_state(cfg.state_file, seen_ids)
+        save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
         return
 
     log.info("[%s] Rilevati %d nuovi avvisi! Preparo l'invio...", cfg.provincia, len(new_posts))
@@ -502,7 +568,7 @@ def main() -> None:
         else:
             log.warning("[%s] Invio fallito per post %d. Verrà ritentato.", cfg.provincia, p_id)
 
-    save_state(cfg.state_file, seen_ids)
+    save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
     log.info("[%s] Run terminata. Notifiche inviate con successo: %d.", cfg.provincia, success_count)
 
 

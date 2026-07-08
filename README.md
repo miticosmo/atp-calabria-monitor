@@ -56,12 +56,16 @@ Metodo alternativo: dopo aver scritto al tuo bot, apri nel browser
    └── .github/
        └── workflows/
            ├── monitor_reggio_calabria.yml
-           └── monitor_vibo_valentia.yml
+           ├── monitor_vibo_valentia.yml
+           ├── monitor_catanzaro.yml
+           ├── monitor_cosenza.yml
+           └── monitor_crotone.yml
    ```
 
    Ogni provincia ha il proprio workflow e il proprio file di stato
-   (`state_reggio_calabria.json`, `state_vibo_valentia.json`), così non si
-   sovrappongono e non generano notifiche doppie.
+   (`state_reggio_calabria.json`, `state_vibo_valentia.json`,
+   `state_catanzaro.json`, `state_cosenza.json`, `state_crotone.json`), così
+   non si sovrappongono e non generano notifiche doppie.
 
 ### 4. Imposta i Secrets
 
@@ -73,13 +77,16 @@ Crea questi due secret (mai scriverli nel codice):
 | `TELEGRAM_BOT_TOKEN`  | il token di @BotFather    |
 | `TELEGRAM_CHAT_ID`    | il tuo chat_id            |
 | `BOT_PUSH_TOKEN`      | Personal Access Token con permesso `repo`, usato dai workflow per committare il file di stato |
+| `PROXY_URL`           | (solo province su istruzione.calabria.it) URL di un proxy HTTP/HTTPS, usato come fallback quando il sito blocca l'IP datacenter dei runner GitHub |
+| `TELEGRAM_ADMIN_CHAT_ID` | chat_id personale dove ricevere gli alert di sistema (workflow falliti, fetch bloccato per più run consecutivi) |
 
 ### 5. Primo avvio
 
 Vai su **Actions → USP RC Monitor → Run workflow** (lancio manuale).
 Il primo run **non invia notifiche**: registra gli articoli già pubblicati e
 crea il file di stato della provincia (es. `state_reggio_calabria.json`). Dal
-run successivo riceverai solo i **nuovi** avvisi. Ripeti per `USP VV Monitor`.
+run successivo riceverai solo i **nuovi** avvisi. Ripeti per `USP VV Monitor`,
+`USP CZ Monitor`, `USP CS Monitor` e `USP KR Monitor`.
 
 Da lì il cron parte da solo.
 
@@ -97,6 +104,9 @@ Modificabile nei workflow per provincia in `.github/workflows/`
 | `PER_PAGE`    | `30`                       | Quanti articoli leggere per run                                  |
 | `STATE_FILE`  | `state.json`               | Percorso del file di stato (impostato per provincia nei workflow)|
 | `SITE_BASE_URL` | `https://www.istruzioneatprc.it` | URL base del sito                                       |
+| `PROXY_URL`   | _(vuoto)_                  | Proxy usato solo se il fetch diretto verso il sito fallisce (province su istruzione.calabria.it) |
+| `MAX_CONSECUTIVE_FAILURES` | `3`           | Dopo quanti run consecutivi con fetch fallito viene inviato l'alert admin |
+| `ADMIN_BOT_TOKEN` / `ADMIN_CHAT_ID` | _(vuoto)_ | Bot/chat per l'alert di fetch bloccato. Se non impostati, l'alert è disabilitato silenziosamente |
 
 ### Slug categorie utili (dal sito)
 
@@ -136,6 +146,21 @@ Usa https://crontab.guru per comporre l'espressione.
   sempre attivo; in periodi morti basta un commit qualsiasi per riattivarlo.
 - **Solo nuovi articoli**: la v1 notifica un articolo una volta sola. Non rileva
   *modifiche* a un articolo già visto (vedi sotto).
+- **Blocco WAF sulle province istruzione.calabria.it (VV, CZ, CS, KR)**: il sito
+  a volte risponde con HTTP 200 ma una pagina di blocco invece del JSON atteso
+  (non un errore di rete, quindi il fallback al `PROXY_URL` non scattava). Corretto:
+  ora un corpo non-JSON forza esplicitamente il passaggio al proxy. Se il blocco
+  persiste per `MAX_CONSECUTIVE_FAILURES` run di fila, viene inviato un alert
+  Telegram all'admin (il run in sé continua a uscire con successo, per non
+  spammare su singoli blocchi transitori).
+
+---
+
+## Feedback e richieste di funzionalità
+
+Hai un suggerimento, hai trovato un bug o vuoi che venga aggiunta un'altra
+provincia/funzionalità? Scrivi direttamente su Telegram a
+[@MitiCosmo](https://t.me/MitiCosmo).
 
 ---
 

@@ -186,13 +186,28 @@ def fetch_range(cfg: LocalConfig, date_from: str, date_to: str) -> list[dict]:
         "page": 1,
     }
     posts: list[dict] = []
+    global _SOURCE_USE_PROXY
+    retried_with_proxy = False
     while True:
         try:
             resp = _get_source(url, params=params, headers={"User-Agent": "USP-Backfill/1.0"})
             if resp.status_code == 400 and params["page"] > 1:
                 break
             resp.raise_for_status()
-            batch = resp.json()
+            try:
+                batch = resp.json()
+            except ValueError:
+                # HTTP 200 ma corpo non-JSON: probabile pagina di blocco/challenge del WAF,
+                # non fine paginazione. Passa al proxy e ripeti la stessa pagina una volta
+                # sola, invece di interrompere silenziosamente il backfill.
+                snippet = resp.text[:150].replace("\n", " ")
+                print(f"  [{cfg.provincia}] Risposta 200 non-JSON (probabile blocco WAF): {snippet!r}", file=sys.stderr)
+                if SOURCE_PROXIES and not _SOURCE_USE_PROXY and not retried_with_proxy:
+                    print(f"  [{cfg.provincia}] Passo al proxy e ripeto la pagina {params['page']}.", file=sys.stderr)
+                    _SOURCE_USE_PROXY = True
+                    retried_with_proxy = True
+                    continue
+                raise
             if not batch:
                 break
             posts.extend(batch)
@@ -201,6 +216,7 @@ def fetch_range(cfg: LocalConfig, date_from: str, date_to: str) -> list[dict]:
             if params["page"] >= total:
                 break
             params["page"] += 1
+            retried_with_proxy = False
         except Exception as e:
             print(f"Errore durante il recupero dei post: {e}", file=sys.stderr)
             break

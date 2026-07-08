@@ -1,14 +1,14 @@
-name: USP CZ Monitor
+name: USP KR Monitor
 
 on:
   schedule:
-    # Slot temporari di test (orari italiani CEST -> UTC), sfasati di +10 min
-    # rispetto a RC per evitare conflitti di push: 10:10, 13:10, 15:40, 18:10, 23:10 IT
-    - cron: "10 8 * * *"
-    - cron: "10 11 * * *"
-    - cron: "40 13 * * *"
-    - cron: "10 16 * * *"
-    - cron: "10 21 * * *"
+    # Slot temporari di test (orari italiani CEST -> UTC), sfasati di +20 min
+    # rispetto a RC per evitare conflitti di push: 10:20, 13:20, 15:50, 18:20, 23:20 IT
+    - cron: "20 8 * * *"
+    - cron: "20 11 * * *"
+    - cron: "50 13 * * *"
+    - cron: "20 16 * * *"
+    - cron: "20 21 * * *"
   workflow_dispatch:
 
 jobs:
@@ -34,12 +34,12 @@ jobs:
 
       - name: Run Monitor Script
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_CZ }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_CZ }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_KR }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_KR }}
           CATEGORIES: ""
-          PROVINCIA: "Catanzaro"
-          SITE_BASE_URL: "https://www.istruzione.calabria.it/catanzaro"
-          STATE_FILE: "state_catanzaro.json"
+          PROVINCIA: "Crotone"
+          SITE_BASE_URL: "https://www.istruzione.calabria.it/crotone"
+          STATE_FILE: "state_crotone.json"
           PER_PAGE: "15"
           PROXY_URL: ${{ secrets.PROXY_URL }}
           ADMIN_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_RC }}
@@ -49,8 +49,8 @@ jobs:
       - name: Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: auto-update state_catanzaro.json [skip ci]"
-          file_pattern: "state_catanzaro.json"
+          commit_message: "chore: auto-update state_crotone.json [skip ci]"
+          file_pattern: "state_crotone.json"
 
       # Avviso Telegram all'amministratore solo se il run fallisce.
       # Usa il bot RC perché è l'unico abilitato a inviare DM in privato.
@@ -59,6 +59,6 @@ jobs:
         run: |
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN_RC }}/sendMessage" \
             --data-urlencode chat_id="${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}" \
-            --data-urlencode text="⚠️ Workflow FALLITO: USP CZ Monitor
+            --data-urlencode text="⚠️ Workflow FALLITO: USP KR Monitor
             Run: ${{ github.run_id }}
             Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
