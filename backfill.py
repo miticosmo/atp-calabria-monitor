@@ -386,7 +386,7 @@ def main() -> int:
             inline_keyboard = [[{"text": "📄 Apri pagina avviso", "url": p.get("link", "")}]]
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att["url"]}])
-            inline_keyboard.append([{"text": "☕ Offrimi un caffè", "url": DONATION_URL}])
+            inline_keyboard.append([{"text": "☕ Offrimi un caffè per il progetto", "url": DONATION_URL}])
             reply_markup = {"inline_keyboard": inline_keyboard}
 
             if send_message(cfg, text, reply_markup):
