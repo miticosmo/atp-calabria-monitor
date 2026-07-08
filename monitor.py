@@ -404,6 +404,12 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
             safe_url = html.escape(att['url'])
             msg += f"• <a href='{safe_url}'>{att['name']}</a>\n"
 
+    msg += (
+        "\n💙 <i>Questo canale è gratuito e senza scopo di lucro. Tenerlo online ha "
+        "però un costo: se ti è utile, offrimi un caffè, bastano pochi secondi ed è "
+        "un grande aiuto per mantenerlo attivo. Grazie!</i>\n"
+    )
+
     return _truncate_telegram(msg)
 
 
@@ -485,7 +491,7 @@ def main() -> None:
         if attachments:
             for att in attachments[:2]:  # Massimo due pulsanti rapidi sotto l'avviso
                 inline_keyboard.append([{"text": f"⬇️ {att['name']}", "url": att['url']}])
-        inline_keyboard.append([{"text": "☕ Offri un caffè per il progetto", "url": DONATION_URL}])
+        inline_keyboard.append([{"text": "☕ Offrimi un caffè", "url": DONATION_URL}])
 
         reply_markup = {"inline_keyboard": inline_keyboard}
 
