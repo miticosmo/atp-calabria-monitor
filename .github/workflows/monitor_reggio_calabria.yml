@@ -40,6 +40,7 @@ jobs:
           PROVINCIA: "Reggio Calabria"
           SITE_BASE_URL: "https://www.istruzioneatprc.it"
           STATE_FILE: "state_reggio_calabria.json"
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           ADMIN_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_RC }}
           ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
         run: python monitor.py
