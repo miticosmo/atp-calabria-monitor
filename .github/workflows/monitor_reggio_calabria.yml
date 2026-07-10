@@ -11,6 +11,13 @@ on:
     - cron: "0 21 * * *"
   workflow_dispatch:
 
+# I 5 workflow condividono lo stesso gruppo di concurrency: GitHub li serializza,
+# così non pushano mai su master nello stesso istante (elimina la race non-fast-forward
+# nello step di auto-commit dello state file).
+concurrency:
+  group: state-push
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
