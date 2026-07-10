@@ -1,8 +1,10 @@
-# USP Reggio Calabria → Telegram Monitor
+# ATP Calabria → Telegram Monitor
 
-Bot di notifica che controlla periodicamente le nuove pubblicazioni del sito
-dell'**Ambito Territoriale di Reggio Calabria** (https://www.istruzioneatprc.it)
-e invia un messaggio Telegram per ogni nuovo articolo.
+Bot di notifica che controlla periodicamente le nuove pubblicazioni dei siti
+degli **Ambiti Territoriali della Calabria** e invia un messaggio Telegram nel
+canale della rispettiva provincia per ogni nuovo articolo. Province coperte:
+**Reggio Calabria** (https://www.istruzioneatprc.it), più **Catanzaro**,
+**Cosenza**, **Crotone** e **Vibo Valentia** (https://www.istruzione.calabria.it).
 
 Niente scraping fragile: interroga la **REST API nativa di WordPress**. Lo stato
 viene versionato su Git, quindi ogni rilevamento è tracciato con timestamp
@@ -45,7 +47,7 @@ Metodo alternativo: dopo aver scritto al tuo bot, apri nel browser
 
 ### 3. Crea il repository
 
-1. Crea un repo **privato** su GitHub (es. `usp-rc-monitor`).
+1. Crea un repo **privato** su GitHub (es. `atp-calabria-monitor`).
 2. Carica tutti i file di questo progetto, mantenendo la struttura:
 
    ```

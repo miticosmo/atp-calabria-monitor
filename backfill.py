@@ -374,15 +374,31 @@ def send_message(cfg: LocalConfig, text: str, reply_markup: dict | None = None) 
     return False
 
 def main() -> int:
-    days = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_DAYS
+    # Uso: python backfill.py <giorni> [--dry-run]
+    #   --dry-run: conta ed elenca cosa verrebbe inviato, SENZA inviare né toccare lo stato.
+    dry_run = "--dry-run" in sys.argv
+    positional = [a for a in sys.argv[1:] if not a.startswith("-")]
+    days = int(positional[0]) if positional else DEFAULT_DAYS
     cfg = LocalConfig()
 
     date_from = (date.today() - timedelta(days=days)).isoformat()
     date_to = date.today().isoformat()
-    print(f"Avvio Backfill per [{cfg.provincia}] dal {date_from} al {date_to}")
+    print(f"Avvio Backfill per [{cfg.provincia}] dal {date_from} al {date_to}"
+          + (" — DRY-RUN (solo conteggio, nessun invio)" if dry_run else ""))
 
     posts = fetch_range(cfg, date_from, date_to)
-    print(f"Elaborazione di {len(posts)} articoli...")
+    matching = [p for p in posts if matches_filter(p, cfg.categories)]
+    print(f"Articoli nel range: {len(posts)} · da inviare dopo filtro categorie: {len(matching)}")
+
+    # DRY-RUN: elenca cosa verrebbe inviato e termina senza toccare Telegram né lo stato.
+    if dry_run:
+        for p in matching:
+            d = (p.get("date") or "")[:10]
+            t = html.unescape(re.sub(r"<[^>]+>", "", p.get("title", {}).get("rendered", "")))
+            print(f"  - {d} [{p['id']}] {t[:70]}")
+        print(f"\nDRY-RUN: {len(matching)} messaggi verrebbero inviati a [{cfg.provincia}]. "
+              "Nessun invio effettuato, stato invariato.")
+        return 0
 
     # Gestione stato locale
     seen_ids = set()
