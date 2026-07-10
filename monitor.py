@@ -176,6 +176,10 @@ class Config:
         self.admin_bot_token = os.environ.get("ADMIN_BOT_TOKEN", "").strip()
         self.admin_chat_id = os.environ.get("ADMIN_CHAT_ID", "").strip()
         self.max_consecutive_failures = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "3"))
+        # Anti-spam degli alert: dopo il primo avviso al superamento della soglia, invia
+        # al più un promemoria ogni N run consecutivi ancora falliti (non ad ogni run).
+        # 0 = un solo avviso finché il blocco persiste. Default 12 (~2-3 giorni a 5 run/dì).
+        self.realert_every_failures = int(os.environ.get("REALERT_EVERY_FAILURES", "12"))
 
         raw_cats = os.environ.get("CATEGORIES", "").strip()
         self.categories = {c.strip().lower() for c in raw_cats.split(",") if c.strip()}
@@ -514,7 +518,15 @@ def main() -> None:
         consecutive_failures += 1
         log.warning("[%s] Fetch non riuscito (%d run consecutivi), salto questo run: %s",
                     cfg.provincia, consecutive_failures, err)
-        if consecutive_failures >= cfg.max_consecutive_failures:
+        # Anti-spam: avvisa l'admin SOLO al primo superamento della soglia, poi al più un
+        # promemoria ogni `realert_every_failures` run. Senza questo, l'alert ripartirebbe
+        # a OGNI run finché il blocco persiste (4 province x 5 run/dì = decine di notifiche).
+        over_threshold = consecutive_failures - cfg.max_consecutive_failures
+        if over_threshold == 0 or (
+            cfg.realert_every_failures > 0
+            and over_threshold > 0
+            and over_threshold % cfg.realert_every_failures == 0
+        ):
             notify_admin_fetch_failure(cfg, consecutive_failures, err)
         save_state(cfg.state_file, seen_ids, consecutive_failures=consecutive_failures)
         sys.exit(0)
