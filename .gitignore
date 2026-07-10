@@ -5,3 +5,8 @@ files.zip
 .env
 .env.local
 _test_invio.py
+
+cover_*.png
+cover_*.svg
+post-facebook.md
+__pycache__/
