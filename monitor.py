@@ -15,7 +15,6 @@ import os
 import re
 import sys
 import time
-from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -98,25 +97,21 @@ _MONTHS_IT = {
 }
 
 
-def _format_date(date_raw: str) -> tuple[str, str]:
-    """Restituisce (data italiana con orario, etichetta relativa Oggi/Ieri)."""
+def _format_date(date_raw: str) -> str:
+    """Restituisce la data italiana con orario (assoluta, non relativa).
+
+    Nota: NON si usano etichette relative tipo "Oggi"/"Ieri". Un messaggio
+    Telegram e' immutabile dopo l'invio, quindi una label relativa risulterebbe
+    errata dal giorno successivo. La data assoluta resta invece sempre veritiera.
+    """
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?", date_raw)
     if not m:
-        return date_raw, ""
+        return date_raw
     year, month, day, hh, mm = m.groups()
     formatted = f"{int(day)} {_MONTHS_IT.get(month, month)} {year}"
     if hh and mm:
         formatted += f", {hh}:{mm}"
-    relative = ""
-    try:
-        delta = (date.today() - date(int(year), int(month), int(day))).days
-        if delta == 0:
-            relative = "🆕 Oggi"
-        elif delta == 1:
-            relative = "Ieri"
-    except ValueError:
-        pass
-    return formatted, relative
+    return formatted
 
 
 def _format_categories(post: dict[str, Any]) -> str:
@@ -397,8 +392,8 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     title = html.escape(clean_title)
     excerpt = html.escape(clean_excerpt)
 
-    # Data con orario di pubblicazione + etichetta relativa (Oggi/Ieri)
-    date_formatted, relative_label = _format_date(post.get("date", ""))
+    # Data assoluta con orario di pubblicazione
+    date_formatted = _format_date(post.get("date", ""))
 
     # Categorie con emoji dedicata per priorità visiva
     categories_str = _format_categories(post)
@@ -415,10 +410,7 @@ def format_message(post: dict[str, Any], cfg: Config, attachments: list[dict[str
     if excerpt and excerpt != "...":
         msg += f"<i>{excerpt}</i>\n\n"  # Inserisce il testo dell'articolo in corsivo
 
-    date_line = f"📅 {date_formatted}"
-    if relative_label:
-        date_line += f" · {relative_label}"
-    msg += date_line + "\n"
+    msg += f"📅 {date_formatted}\n"
 
     if categories_str:
         msg += f"🏷️ {categories_str}\n"
