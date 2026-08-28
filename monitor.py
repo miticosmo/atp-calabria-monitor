@@ -44,7 +44,12 @@ DONATION_URL = "https://paypal.me/cosmopata"  # link "Offri un caffè" mostrato 
 # gli IP datacenter dei runner GitHub. Se PROXY_URL non è impostato, le richieste sono dirette.
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 SOURCE_PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-_SOURCE_USE_PROXY = False  # diventa True quando il tentativo diretto fallisce e si passa al proxy
+# PROXY_FIRST=1 salta il tentativo diretto e usa SUBITO il proxy. Serve ai siti
+# istruzione.calabria.it, che bloccano gli IP datacenter dei runner GitHub: il tentativo
+# diretto lì va sempre in timeout (~60s sprecati per run). Reggio Calabria
+# (istruzioneatprc.it) lo lascia disattivo, perché lì il diretto funziona ed è più veloce.
+_PROXY_FIRST = os.environ.get("PROXY_FIRST", "").strip().lower() in ("1", "true", "yes")
+_SOURCE_USE_PROXY = bool(SOURCE_PROXIES) and _PROXY_FIRST  # True = usa direttamente il proxy
 
 # Emoji dedicata per dare priorità visiva alle categorie principali.
 # Mappa unificata RC + VV: i due siti usano slug diversi per le stesse categorie.
@@ -214,9 +219,27 @@ def load_state(path: Path) -> dict[str, Any]:
 
 
 def save_state(path: Path, seen_ids: set[int], *, consecutive_failures: int = 0) -> None:
-    """Salva lo stato in modo atomico."""
+    """Salva lo stato in modo atomico.
+
+    Anti-rumore: se lo stato *sostanziale* (seen_ids + contatore fallimenti) non è cambiato
+    rispetto al file esistente, non riscrive nulla. Così il solo aggiornamento del timestamp
+    non genera un commit ad ogni run — con il polling fitto la storia Git resta pulita e ogni
+    commit corrisponde a un cambiamento reale (nuovo avviso o variazione dei fallimenti).
+    """
+    seen_sorted = sorted(seen_ids)
+    if path.exists():
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                prev.get("seen_ids") == seen_sorted
+                and prev.get("consecutive_failures", 0) == consecutive_failures
+                and prev.get("seeded", False)
+            ):
+                return
+        except (json.JSONDecodeError, OSError):
+            pass
     payload = {
-        "seen_ids": sorted(seen_ids),
+        "seen_ids": seen_sorted,
         "seeded": True,
         "consecutive_failures": consecutive_failures,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

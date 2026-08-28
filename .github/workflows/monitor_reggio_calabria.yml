@@ -2,20 +2,16 @@ name: USP RC Monitor
 
 on:
   schedule:
-    # Slot temporari di test (orari italiani CEST -> UTC):
-    # 10:00, 13:00, 15:30, 18:00, 23:00 IT
-    - cron: "0 8 * * *"
-    - cron: "0 11 * * *"
-    - cron: "30 13 * * *"
-    - cron: "0 16 * * *"
-    - cron: "0 21 * * *"
+    # Ogni 30 min nelle ore attive (05-20 UTC = 07-22 IT in ora legale).
+    # Minuti sfasati per provincia per non colpire il sito e il push tutti insieme.
+    - cron: "0,30 5-20 * * *"
   workflow_dispatch:
 
-# I 5 workflow condividono lo stesso gruppo di concurrency: GitHub li serializza,
-# così non pushano mai su master nello stesso istante (elimina la race non-fast-forward
-# nello step di auto-commit dello state file).
+# Concurrency PER-PROVINCIA (group diverso per ciascuna): impedisce che un run si sovrapponga
+# al precedente della stessa provincia (stesso state file → possibile conflitto di rebase).
+# Province diverse hanno group diversi, quindi continuano a girare in parallelo.
 concurrency:
-  group: state-push
+  group: monitor-reggio-calabria
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.BOT_PUSH_TOKEN }}
+          fetch-depth: 0  # storia completa: serve al rebase affidabile nello step di push
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,11 +49,32 @@ jobs:
           ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
         run: python monitor.py
 
-      - name: Commit and Push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: auto-update state_reggio_calabria.json [skip ci]"
-          file_pattern: "state_reggio_calabria.json"
+      # Commit + push dello stato con retry: i 5 workflow ora girano in parallelo, quindi il
+      # push su master può trovarsi indietro (race). Invece di fallire (come l'auto-commit),
+      # si riallinea con rebase e riprova. Province diverse toccano file di stato diversi,
+      # quindi il rebase non genera mai conflitti: converge sempre.
+      - name: Commit and push state (retry anti-race)
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state_reggio_calabria.json
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica di stato: niente da committare."
+            exit 0
+          fi
+          git commit -m "chore: auto-update state_reggio_calabria.json [skip ci]"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin HEAD:master; then
+              echo "Push riuscito (tentativo $attempt)."
+              exit 0
+            fi
+            echo "Push rifiutato (race), riallineo con rebase e riprovo ($attempt)…"
+            git pull --rebase --autostash origin master || true
+            sleep $((RANDOM % 4 + 1))
+          done
+          echo "Push fallito dopo 6 tentativi." >&2
+          exit 1
 
       # Avviso Telegram all'amministratore solo se il run fallisce.
       # Usa il bot RC perché è l'unico abilitato a inviare DM in privato.
