@@ -251,6 +251,6 @@
     68103
   ],
   "seeded": true,
-  "consecutive_failures": 0,
-  "updated_at": "2026-11-20T13:44:48+0000"
+  "consecutive_failures": 1,
+  "updated_at": "2026-11-20T21:39:09+0000"
 }
